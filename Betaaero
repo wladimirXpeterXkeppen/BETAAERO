@@ -1,14 +1,16 @@
 /* ============================================================
-   AeroClient v32.1.0 — BETA
-   New in v32.1:
-   - Block Outline: rewritten as Celestar port (material color only,
-     no 3D face render — the previous face-render version was unstable)
-   - GUI Theme: dropdown skin selector (Default / Aero / Moon)
-     · former "TNO Theme" is now "Aero"
-     · "Moon" added: Genshin Columbina-inspired deep violet + pale gold
-   (v31.2: TNO integrated as built-in MOD, unique per-MOD icons)
+   AeroClient v32.2.0 — BETA
+   New in v32.2:
+   - Pixel Editor: cells now paint under Aero/Moon themes
+     (inline !important beats themed stylesheet !important)
+   - Pixel Editor: red center crosshair guide
+   - Crosshair: smooth size slider (CSS transform compensates
+     for the integer draw-scale snapping)
+   - Stats: FPS/CPS/PING counters stay on one line after
+     MineFun's updated .chat .stats layout
+   (v32.1: Block Outline Celestar port, GUI Theme dropdown)
+   (v31.2: TNO integrated, unique per-MOD icons)
    (v31.1: Toggle knob fix, HUD Editor arrow-key nudge)
-   (v31: KeyStroke into HUD Editor, BWN preview gate)
    Storage: ac.cfg.v29 (+ .bak) | ac-plugins-db | ac-db
    ============================================================ */
 (function() {
@@ -876,6 +878,10 @@
   .ac-pe-tabs{display:flex;gap:4px;margin-top:8px;border-bottom:1px solid rgba(255,255,255,.06);}
   .ac-pe-tab{flex:1;padding:5px;background:transparent;color:#8a8d96;border:none;border-bottom:2px solid transparent;cursor:pointer;font-family:inherit;font-size:11px;}
   .ac-pe-tab.active{color:#3b82f6;border-bottom-color:#3b82f6;font-weight:bold;}
+  .ac-pe-wrap{position:relative;width:100%;}
+  .ac-pe-cross{position:absolute;inset:0;pointer-events:none;z-index:3;}
+  .ac-pe-cross::before{content:"";position:absolute;left:0;right:0;top:50%;height:1px;background:rgba(255,70,90,.9);box-shadow:0 0 4px rgba(255,70,90,.75);transform:translateY(-0.5px);}
+  .ac-pe-cross::after{content:"";position:absolute;top:0;bottom:0;left:50%;width:1px;background:rgba(255,70,90,.9);box-shadow:0 0 4px rgba(255,70,90,.75);transform:translateX(-0.5px);}
   .ac-modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:2147483640;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);}
   .ac-modal{background:#1a1a1d;border-radius:12px;width:min(420px,92vw);max-height:88vh;overflow-y:auto;padding:22px;box-shadow:0 30px 80px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.06);}
   .ac-modal.wide{width:min(640px,94vw);}
@@ -1264,7 +1270,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     return { open, close };
   })();
 
-  /* ===== PixelEditor ===== */
+  /* ===== PixelEditor (v32.2: paint fix + center crosshair) ===== */
   const PixelEditor = (() => {
     let modal = null, state = null, onSave = null;
     function build() {
@@ -1277,8 +1283,14 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       const h = ce('h3', '', box); h.textContent = 'Pixel Editor';
       const info = ce('div', 'sub', box);
       info.textContent = (state.targetLabel || '') + '  ' + state.n + 'x' + state.n;
-      const gridEl = ce('div', 'ac-pe-grid', box);
+
+      // Wrapper so we can overlay the center crosshair without touching grid children
+      const gridWrap = ce('div', 'ac-pe-wrap', box);
+      const gridEl = ce('div', 'ac-pe-grid', gridWrap);
       gridEl.style.gridTemplateColumns = 'repeat(' + state.n + ',1fr)';
+      const crossEl = ce('div', 'ac-pe-cross', gridWrap);
+      void crossEl; // purely decorative
+
       const tabs = ce('div', 'ac-pe-tabs', box);
       const tabP = ce('button', 'ac-pe-tab active', tabs); tabP.textContent = 'Palette';
       const tabC = ce('button', 'ac-pe-tab', tabs); tabC.textContent = 'Custom';
@@ -1333,7 +1345,12 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       state.grid = state.grid.slice();
       state.currentColor = '#ffffff';
       state.drawing = false;
-      function cellBg(c, col) { if (col) c.style.background = col; else c.style.background = ''; }
+
+      // v32.2: inline !important so themed stylesheet !important can't override us
+      function cellBg(c, col) {
+        if (col) c.style.setProperty('background', col, 'important');
+        else c.style.removeProperty('background');
+      }
       function buildGrid() {
         gridEl.innerHTML = '';
         for (let i = 0; i < n * n; i++) { const c = ce('div', 'ac-pe-cell', gridEl); c.dataset.idx = i; cellBg(c, state.grid[i]); }
@@ -1463,8 +1480,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
   ];
 
   /* ============================================================
-     MOD: GUI Theme (v32.1)
-     Dropdown selector for GUI skin presets.
+     MOD: GUI Theme
      ============================================================ */
   const GUI_THEME_CSS = {
     default: '',
@@ -2205,9 +2221,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     destroy() { this._clear && this._clear(); }
   });
 
-  /* ===== MOD: Crosshair ===== */
+  /* ===== MOD: Crosshair (v32.2: smooth size) ===== */
   Mods.reg({
-    id: 'crosshair', name: 'Crosshair', category: 'Gameplay', icon: 'svg:crosshair', description: 'Crosshair-center ray targeting (perf-optimized)', defaultEnabled: false,
+    id: 'crosshair', name: 'Crosshair', category: 'Gameplay', icon: 'svg:crosshair', description: 'Crosshair-center ray targeting (perf-optimized, smooth scale)', defaultEnabled: false,
     settings: [
       { id: 'adaptive', type: 'toggle', label: 'Adaptive target', default: true },
       { id: 'fpsMode', type: 'toggle', label: 'FPS mode (30fps)', default: true },
@@ -2232,7 +2248,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       })();
       const cv = document.createElement('canvas');
       cv.id = 'ac-crosshair';
-      cv.style.cssText = 'position:fixed;z-index:2147483610;pointer-events:none;display:none;image-rendering:pixelated;';
+      cv.style.cssText = 'position:fixed;z-index:2147483610;pointer-events:none;display:none;image-rendering:pixelated;transform-origin:center center;';
       document.body.appendChild(cv);
       const ctx = cv.getContext('2d');
       st._el = cv;
@@ -2315,6 +2331,24 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           center();
         }
       }
+
+      // v32.2: smooth scale compensation
+      let _smoothKey = '';
+      function applySmooth() {
+        const s = Config.get('mods.crosshair') || {};
+        const size = (s.size == null ? 1 : s.size);
+        const thRaw = (s.thickness == null ? 2 : s.thickness);
+        const th = Math.round(thRaw);
+        const coreScale = Math.max(1, Math.round(th * size));
+        const desired = th * size;
+        const factor = desired / coreScale;
+        const key = factor.toFixed(4);
+        if (key === _smoothKey) return;
+        _smoothKey = key;
+        if (Math.abs(factor - 1) < 1e-4) cv.style.removeProperty('transform');
+        else cv.style.setProperty('transform', 'scale(' + factor + ')', 'important');
+      }
+
       st._invalidate = () => { last = null; st._dirty = true; };
       st._cfg = null; st._nPG = null; st._tPG = null; st._dirty = true; st._lastTarget = undefined;
       st._refreshCfg = () => {
@@ -2322,6 +2356,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         st._nPG = Config.get('mods.crosshair.normalPixelGrids', {}) || {};
         st._tPG = Config.get('mods.crosshair.targetPixelGrids', {}) || {};
         st._dirty = true;
+        _smoothKey = ''; // force smooth re-apply
       };
       st._refreshCfg();
       st._lastDpr = dprCap();
@@ -2332,8 +2367,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         if (!cv.isConnected) { document.body.appendChild(cv); last = null; }
         if (Game.epoch !== st._lastEpoch) { st._lastEpoch = Game.epoch; last = null; st._dirty = true; }
         if (last) center();
-      }, 600);
-      st._onVis = () => { if (!document.hidden) { last = null; st._lastDpr = dprCap(); st._dirty = true; } };
+        applySmooth();
+      }, 250);
+      st._onVis = () => { if (!document.hidden) { last = null; st._lastDpr = dprCap(); st._dirty = true; _smoothKey = ''; } };
       document.addEventListener('visibilitychange', st._onVis);
       st._raf = 0; st._running = false;
       let lastCheck = 0;
@@ -2341,6 +2377,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         if (!Mods.on('crosshair')) { st._raf = 0; st._running = false; return; }
         st._raf = requestAnimationFrame(loop);
         cv.style.display = 'block';
+        applySmooth();
         const s = st._cfg;
         const now = performance.now();
         const interval = s.adaptive ? (s.fpsMode ? 33 : 16) : 100;
@@ -2362,7 +2399,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         }
       };
       st._start = () => { if (st._running) return; st._running = true; lastCheck = 0; st._raf = requestAnimationFrame(loop); };
-      st._stop = () => { if (st._raf) { cancelAnimationFrame(st._raf); st._raf = 0; } st._running = false; if (st._el) st._el.style.display = 'none'; };
+      st._stop = () => { if (st._raf) { cancelAnimationFrame(st._raf); st._raf = 0; } st._running = false; if (st._el) st._el.style.display = 'none'; cv.style.removeProperty('transform'); };
       st._openEditor = which => {
         const s = Config.get('mods.crosshair') || {};
         const n = (s.gridSize === 32) ? 32 : 16;
@@ -3366,7 +3403,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     destroy() { const st = this; if (st._audio) { try { st._audio.pause(); st._audio.src = ''; } catch (_) {} } }
   });
 
-  /* ===== MOD: Block Outline (v32.1: Celestar port, no 3D face render) ===== */
+  /* ===== MOD: Block Outline (Celestar port, no 3D face render) ===== */
   Mods.reg({
     id: 'blockoutline', name: 'Block Outline', category: 'Gameplay', icon: 'svg:cube3d',
     description: 'Highlight "Blocks Highlighting" mesh color (no 3D face render)',
@@ -3413,7 +3450,6 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       }
 
       function applyColor() {
-        if (!Mods.gs('blockoutline', 'color', '#81e1ff')) return;
         try {
           const sys = findSystem();
           if (!sys) return;
@@ -3914,6 +3950,8 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       }
       function hideSpec(sel) { document.querySelectorAll(sel).forEach(el => { el.dataset.acShotOD = el.style.display || ''; el.style.display = 'none'; }); }
       function restoreSpec() { document.querySelectorAll('[data-ac-shot-od]').forEach(el => { el.style.display = el.dataset.acShotOD || ''; delete el.dataset.acShotOD; }); }
+      // v32.2: always restore, even on error
+      function hardRestore() { try { st._clean.show(); } catch (_) {} restoreSpec(); }
       st.take = async function() {
         const cv = getCv();
         if (!cv) { toast('Game canvas not found'); return; }
@@ -3927,8 +3965,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           if (hu) { st._clean.hide(); await new Promise(r => setTimeout(r, 180)); }
           else { await new Promise(r => setTimeout(r, 50)); }
           const url = await capture(cv);
-          if (hu) st._clean.show();
-          restoreSpec();
+          hardRestore();
           if (!url) { toast('Capture failed'); return; }
           flash();
           if (s.autoDownload !== false) {
@@ -3942,7 +3979,8 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
             a.remove();
             toast('Screenshot saved');
           } else { st._lastDataURL = url; console.log('[Screenshot]', url); toast('Screenshot saved'); }
-        } catch (e) { try { st._clean.show(); } catch (_) {} restoreSpec(); toast('Error'); }
+        } catch (e) { hardRestore(); toast('Error'); }
+        finally { hardRestore(); }
       };
       st._onKD = e => {
         if (!Mods.on('screenshot') || isText()) return;
@@ -4917,7 +4955,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     };
     const inf = ce('div', '', box);
     inf.style.cssText = 'margin-top:14px;padding:12px;border-radius:6px;background:rgba(59,130,246,.08);font-size:11.5px;line-height:1.75;color:#c4c7cf;';
-    inf.innerHTML = '<b style="color:#93c5fd;">AeroClient v32.1.0</b> (Beta)<br>Mods: ' + Mods.all().length + '<br>Start: R-Shift / F8<br><br><b style="color:#93c5fd;">Storage</b><br>Settings: <code>ac.cfg.v29</code> (+ .bak)<br>Plugins: <code>ac-plugins-db</code><br>MP3: <code>ac-db</code>';
+    inf.innerHTML = '<b style="color:#93c5fd;">AeroClient v32.2.0</b> (Beta)<br>Mods: ' + Mods.all().length + '<br>Start: R-Shift / F8<br><br><b style="color:#93c5fd;">Storage</b><br>Settings: <code>ac.cfg.v29</code> (+ .bak)<br>Plugins: <code>ac-plugins-db</code><br>MP3: <code>ac-db</code>';
   }
   function renderKeybind(box) {
     const tt = ce('div', 'ac-section-title', box); tt.textContent = 'KEYBIND EDITOR';
@@ -5350,9 +5388,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     const w = ce('div', '', container);
     w.style.cssText = 'max-width:520px;padding:20px;';
     w.innerHTML =
-      '<div style="font-size:18px;font-weight:800;color:#fff;margin-bottom:4px;">AeroClient v32.1.0</div>' +
+      '<div style="font-size:18px;font-weight:800;color:#fff;margin-bottom:4px;">AeroClient v32.2.0</div>' +
       '<div style="font-size:12px;color:#8a8d96;margin-bottom:20px;">MineFun.io Integrated Client — Beta</div>' +
-      '<div style="padding:14px;border-radius:8px;background:#232328;font-size:12px;line-height:1.9;color:#c4c7cf;">Mods: <b style="color:#93c5fd;">' + Mods.all().length + '</b><br>Open key: <b style="color:#93c5fd;">R-Shift</b> / F8<br><br><b>v32.1 changes:</b><br>· Block Outline: Celestar port (material color only, no 3D face render)<br>· GUI Theme: dropdown (Default / Aero / Moon)<br><br><b>v31.2 changes:</b><br>· TNO Theme integrated as built-in MOD<br>· Every MOD now has a unique, intuitive icon<br><br><b>v31.1 changes:</b><br>· Toggle switch: knob centering robust against themed borders<br>· HUD Editor: arrow-key nudge (1px, Shift=10px)<br><br><b>v31 changes:</b><br>· KeyStroke: unified into HUD Editor<br>· BWN: preview hidden unless in HUD Editor<br><br><b>Storage:</b><br>· Settings → <code>ac.cfg.v29</code> (+ .bak)<br>· Plugins → <code>ac-plugins-db</code><br>· MP3 → <code>ac-db</code></div>';
+      '<div style="padding:14px;border-radius:8px;background:#232328;font-size:12px;line-height:1.9;color:#c4c7cf;">Mods: <b style="color:#93c5fd;">' + Mods.all().length + '</b><br>Open key: <b style="color:#93c5fd;">R-Shift</b> / F8<br><br><b>v32.2 changes:</b><br>· Pixel Editor: cells paint under Aero/Moon themes<br>· Pixel Editor: red center crosshair guide<br>· Crosshair: smooth size slider (CSS transform)<br>· Stats: FPS/CPS/PING stay on one line<br>· Screenshot: guaranteed HUD restore<br><br><b>v32.1 changes:</b><br>· Block Outline: Celestar port (material color only)<br>· GUI Theme: dropdown (Default / Aero / Moon)<br><br><b>v31.2 changes:</b><br>· TNO Theme integrated as built-in MOD<br>· Every MOD now has a unique, intuitive icon<br><br><b>Storage:</b><br>· Settings → <code>ac.cfg.v29</code> (+ .bak)<br>· Plugins → <code>ac-plugins-db</code><br>· MP3 → <code>ac-db</code></div>';
   }
 
   function open_() {
@@ -5590,6 +5628,96 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     return { open: open_, close, isOpen: () => eopen, isAlive: () => !!(eopen && eov && document.body.contains(eov)) };
   })();
 
+  /* ============================================================
+     Stats Inline Fix (v32.2) — keep FPS/CPS/PING on one line
+     Surgical: only touches the counters, .stats, .stats children,
+     and .stats's parent overflow. Inline !important beats any
+     external stylesheet rule.
+     ============================================================ */
+  const StatsInline = (() => {
+    const SEL = '.ac-hud-fps,.ac-hud-cps,.ac-hud-ping';
+    const forced = new Map();
+
+    function force(el, styles) {
+      if (!el || el.nodeType !== 1) return;
+      if (!forced.has(el)) {
+        const snap = {};
+        for (const k in styles) snap[k] = [el.style.getPropertyValue(k), el.style.getPropertyPriority(k)];
+        forced.set(el, snap);
+      }
+      for (const k in styles) el.style.setProperty(k, styles[k], 'important');
+    }
+
+    function restore() {
+      for (const [el, snap] of Array.from(forced.entries())) {
+        if (!el || !el.isConnected) { forced.delete(el); continue; }
+        for (const k in snap) {
+          const [v, p] = snap[k];
+          if (v) el.style.setProperty(k, v, p || '');
+          else   el.style.removeProperty(k);
+        }
+        forced.delete(el);
+      }
+    }
+
+    const COUNTER = { 'display': 'inline-flex', 'flex-shrink': '0', 'white-space': 'nowrap', 'vertical-align': 'middle' };
+    const STATS   = { 'display': 'flex', 'flex-wrap': 'nowrap', 'width': 'max-content', 'max-width': 'none', 'overflow': 'visible' };
+    const CHILD   = { 'flex-shrink': '0', 'white-space': 'nowrap' };
+    const PARENT  = { 'overflow': 'visible', 'overflow-x': 'visible', 'overflow-y': 'visible' };
+
+    function apply() {
+      const counters = document.querySelectorAll(SEL);
+      if (!counters.length) return;
+      counters.forEach(el => {
+        force(el, COUNTER);
+        let stats = el.parentElement;
+        while (stats && stats !== document.body) {
+          if (stats.classList && stats.classList.contains('stats')) break;
+          stats = stats.parentElement;
+        }
+        if (!stats || stats === document.body) return;
+        force(stats, STATS);
+        const kids = stats.children;
+        for (let i = 0; i < kids.length; i++) force(kids[i], CHILD);
+        const par = stats.parentElement;
+        if (par && par !== document.body) force(par, PARENT);
+      });
+    }
+
+    let domObs = null, styleObs = null, intId = 0, resizeObs = null;
+    function start() {
+      if (!domObs) {
+        domObs = new MutationObserver(() => apply());
+        domObs.observe(document.body, { childList: true, subtree: true });
+      }
+      if (!styleObs) {
+        styleObs = new MutationObserver(muts => {
+          for (let i = 0; i < muts.length; i++) {
+            const el = muts[i].target;
+            if (el.classList && (el.classList.contains('ac-hud-fps') || el.classList.contains('ac-hud-cps') || el.classList.contains('ac-hud-ping'))) {
+              apply(); return;
+            }
+          }
+        });
+        styleObs.observe(document.body, { attributes: true, attributeFilter: ['style'], subtree: true });
+      }
+      if (!resizeObs && typeof ResizeObserver !== 'undefined') {
+        resizeObs = new ResizeObserver(() => apply());
+        resizeObs.observe(document.documentElement);
+      }
+      if (!intId) intId = setInterval(apply, 500);
+      apply();
+    }
+    function stop() {
+      if (domObs)    { try { domObs.disconnect();    } catch (_) {} domObs = null; }
+      if (styleObs)  { try { styleObs.disconnect();  } catch (_) {} styleObs = null; }
+      if (resizeObs) { try { resizeObs.disconnect(); } catch (_) {} resizeObs = null; }
+      if (intId) { clearInterval(intId); intId = 0; }
+      restore();
+    }
+    return { start, stop, apply, restore, _forced: forced };
+  })();
+
   /* ===== Detection ===== */
   setInterval(() => {
     const w = Game.world();
@@ -5622,6 +5750,10 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
   /* ===== Boot ===== */
   Config.load();
   Mods.boot();
+
+  // Stats Inline Fix — start once DOM is ready
+  if (document.body) StatsInline.start();
+  else document.addEventListener('DOMContentLoaded', () => StatsInline.start(), { once: true });
 
   setTimeout(async () => {
     try {
@@ -5668,13 +5800,15 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
   document.addEventListener('mouseup', e => { Input._up('Mouse' + e.button); }, true);
 
   window.AeroClient = {
-    version: '32.1.0-beta',
+    version: '32.2.0-beta',
     Config, Mods, HUD, GUI, Editor, Reach, Game, Physics, PointerLock, PixelEditor, IDB, PDB, Confirm, Plugins, ICONS,
+    StatsInline,
     open: () => GUI.open(),
     close: () => GUI.close(),
     toggle: () => { if (open) close_(); else open_(); },
     forceOpen: () => GUI.open(),
     _d() {
+      try { StatsInline.stop(); } catch (_) {}
       Mods.killAll();
       try { if (Editor && Editor.isOpen && Editor.isOpen()) Editor.close(); } catch (_) {}
       ['ac-hud-root', 'ac-style', 'ac-theme-aero', 'ac-theme-moon', 'ac-theme-tno', 'ac-editor', 'ac-cleanui', 'ac-crosshair', 'ac-hitbox-canvas', 'ac-blockoutline-canvas', 'ac-atmo-css', 'ac-shot-style', 'ac-shot-xh', 'ac-rec-style', 'ac-invcustomizer'].forEach(id => document.getElementById(id)?.remove());
@@ -5688,10 +5822,12 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     }
   };
 
-  console.log('%c✦ AeroClient v32.1.0 BETA', 'color:#93c5fd;font-weight:bold;font-size:13px;background:#0f0f11;padding:4px 8px;border-radius:4px');
+  console.log('%c✦ AeroClient v32.2.0 BETA', 'color:#93c5fd;font-weight:bold;font-size:13px;background:#0f0f11;padding:4px 8px;border-radius:4px');
   console.log('  Start: R-Shift / F8');
   console.log('  Mods:', Mods.all().length);
-  console.log('  + Block Outline: Celestar port (material color only)');
-  console.log('  + GUI Theme: dropdown (Default / Aero / Moon)');
+  console.log('  + Pixel Editor: cells paint under themes + center crosshair');
+  console.log('  + Crosshair: smooth size slider');
+  console.log('  + Stats: FPS/CPS/PING stay on one line');
+  console.log('  + Screenshot: guaranteed HUD restore');
   console.log('  Storage: ac.cfg.v29 (+ .bak) / ac-plugins-db / ac-db');
 })();
