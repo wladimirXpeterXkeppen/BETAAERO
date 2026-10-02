@@ -1,13 +1,13 @@
 /* ============================================================
-   AeroClient v32.2.0 — BETA
-   New in v32.2:
-   - Pixel Editor: cells now paint under Aero/Moon themes
-     (inline !important beats themed stylesheet !important)
-   - Pixel Editor: red center crosshair guide
-   - Crosshair: smooth size slider (CSS transform compensates
-     for the integer draw-scale snapping)
-   - Stats: FPS/CPS/PING counters stay on one line after
-     MineFun's updated .chat .stats layout
+   AeroClient v32.4.0 — BETA
+   New in v32.4:
+   - Canvas Resize Fix built into core (fixes white bar after
+     resize / fullscreen when the game caches the old height)
+   - Screenshot: HUD restore bug fixed (MP3 Player / Compass Rose
+     no longer stuck hidden after "hide UI" capture)
+   - Keybinds: removed Debug entry
+   (v32.2: Pixel Editor paint fix under themes, red center crosshair,
+    smooth crosshair size slider, inline stats fix for FPS/CPS/PING)
    (v32.1: Block Outline Celestar port, GUI Theme dropdown)
    (v31.2: TNO integrated, unique per-MOD icons)
    (v31.1: Toggle knob fix, HUD Editor arrow-key nudge)
@@ -1474,7 +1474,6 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     { id: 'n', label: 'Skin Shop (N)' },
     { id: 'x', label: 'Inventory (X)' },
     { id: 'e', label: 'Use (E)' },
-    { id: '[', label: 'Debug' },
     { id: 'enter', label: 'Chat (Enter)' },
     { id: 'escape', label: 'Menu (Esc)' }
   ];
@@ -3812,7 +3811,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     destroy() { const st = this; if (st._recording) st.stop(); window.removeEventListener('keydown', st._onKD, true); }
   });
 
-  /* ===== MOD: Screenshot ===== */
+  /* ===== MOD: Screenshot (v32.4: HUD restore fix) ===== */
   Mods.reg({
     id: 'screenshot', name: 'Screenshot', category: 'Visual', icon: 'svg:camera', description: 'Screenshot with UI toggle', defaultEnabled: true,
     settings: [
@@ -3948,8 +3947,11 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           });
         });
       }
-      function hideSpec(sel) { document.querySelectorAll(sel).forEach(el => { el.dataset.acShotOD = el.style.display || ''; el.style.display = 'none'; }); }
-      function restoreSpec() { document.querySelectorAll('[data-ac-shot-od]').forEach(el => { el.style.display = el.dataset.acShotOD || ''; delete el.dataset.acShotOD; }); }
+      // v32.4: dataset.acShotOd (camelCase -> data-ac-shot-od) to match the querySelector below.
+      // Previously acShotOD produced data-ac-shot-o-d, so restore never matched and
+      // MP3 Player / Compass Rose HUDs stayed hidden after a "hide UI" capture.
+      function hideSpec(sel) { document.querySelectorAll(sel).forEach(el => { el.dataset.acShotOd = el.style.display || ''; el.style.display = 'none'; }); }
+      function restoreSpec() { document.querySelectorAll('[data-ac-shot-od]').forEach(el => { el.style.display = el.dataset.acShotOd || ''; delete el.dataset.acShotOd; }); }
       // v32.2: always restore, even on error
       function hardRestore() { try { st._clean.show(); } catch (_) {} restoreSpec(); }
       st.take = async function() {
@@ -3993,6 +3995,109 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     },
     apply() {},
     destroy() { const st = this; window.removeEventListener('keydown', st._onKD, true); try { st._clean.show(); } catch (_) {} }
+  });
+
+  /* ===== MOD: Canvas Resize Fix (v32.4: built into core) =====
+     Fixes the "white bar below the game" bug where MineFun caches the
+     OLD canvas height across resize / fullscreen and never re-applies
+     it. Also resets WebGL viewport and syncs camera aspect. */
+  Mods.reg({
+    id: 'canvas-resize-fix',
+    name: 'Canvas Resize Fix',
+    category: 'Visual',
+    icon: 'svg:monitor',
+    description: 'Force canvas to fill window after resize / fullscreen',
+    defaultEnabled: true,
+    settings: [],
+    init() {
+      const st = this;
+      st._timers = [];
+      st._getCanvas = () => document.getElementById('game') || document.querySelector('canvas');
+      st._applyFix = tag => {
+        const cv = st._getCanvas();
+        if (!cv) return false;
+        const W = window.innerWidth;
+        const H = window.innerHeight;
+        if (W <= 0 || H <= 0) return false;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const wantBufW = Math.round(W * dpr);
+        const wantBufH = Math.round(H * dpr);
+        const before = {
+          cssW: cv.style.width || getComputedStyle(cv).width,
+          cssH: cv.style.height || getComputedStyle(cv).height,
+          bufW: cv.width, bufH: cv.height
+        };
+        let changed = false;
+        const wantCssW = W + 'px', wantCssH = H + 'px';
+        if (cv.style.width  !== wantCssW) { cv.style.width  = wantCssW; changed = true; }
+        if (cv.style.height !== wantCssH) { cv.style.height = wantCssH; changed = true; }
+        if (cv.width !== wantBufW || cv.height !== wantBufH) {
+          cv.width = wantBufW; cv.height = wantBufH; changed = true;
+        }
+        try {
+          const gl = cv.getContext('webgl2') || cv.getContext('webgl');
+          if (gl) {
+            const vp = gl.getParameter(gl.VIEWPORT);
+            const bw = gl.drawingBufferWidth, bh = gl.drawingBufferHeight;
+            if (vp[0] !== 0 || vp[1] !== 0 || vp[2] !== bw || vp[3] !== bh) {
+              gl.viewport(0, 0, bw, bh); changed = true;
+            }
+          }
+        } catch (_) {}
+        try {
+          const aspect = W / H;
+          const cam = Game.camera();
+          if (cam && cam.aspect != null && Math.abs(cam.aspect - aspect) > 0.0005) {
+            cam.aspect = aspect;
+            if (cam.updateProjectionMatrix) cam.updateProjectionMatrix();
+            changed = true;
+          }
+          const gw = Game.world();
+          const fgCam = gw && gw.threeScene && gw.threeScene.foregrCamera;
+          if (fgCam && fgCam.aspect != null && Math.abs(fgCam.aspect - aspect) > 0.0005) {
+            fgCam.aspect = aspect;
+            if (fgCam.updateProjectionMatrix) fgCam.updateProjectionMatrix();
+            changed = true;
+          }
+        } catch (_) {}
+        if (changed && tag) {
+          console.log('[CanvasResizeFix]', tag,
+            'css', before.cssW + '×' + before.cssH, '→', wantCssW + '×' + wantCssH,
+            '| buf', before.bufW + '×' + before.bufH, '→', wantBufW + '×' + wantBufH);
+        }
+        return changed;
+      };
+      st._schedule = () => {
+        st._timers.forEach(clearTimeout);
+        st._timers = [];
+        [0, 80, 250, 600, 1200, 2500].forEach(ms => {
+          st._timers.push(setTimeout(() => st._applyFix('resize+' + ms), ms));
+        });
+      };
+      st._onResize = () => st._schedule();
+      st._onFS = () => { st._schedule(); requestAnimationFrame(() => st._schedule()); };
+      st._onVis = () => { if (!document.hidden) st._schedule(); };
+      window.addEventListener('resize', st._onResize, true);
+      document.addEventListener('fullscreenchange', st._onFS, true);
+      document.addEventListener('webkitfullscreenchange', st._onFS, true);
+      document.addEventListener('visibilitychange', st._onVis);
+      st._watchdogId = setInterval(() => {
+        if (!Mods.on('canvas-resize-fix')) return;
+        st._applyFix('');
+      }, 400);
+      st._applyFix('init');
+    },
+    apply(enabled) { if (enabled && this._applyFix) this._applyFix('apply'); },
+    destroy() {
+      const st = this;
+      window.removeEventListener('resize', st._onResize, true);
+      document.removeEventListener('fullscreenchange', st._onFS, true);
+      document.removeEventListener('webkitfullscreenchange', st._onFS, true);
+      document.removeEventListener('visibilitychange', st._onVis);
+      if (st._watchdogId) clearInterval(st._watchdogId);
+      if (st._timers) st._timers.forEach(clearTimeout);
+      st._timers = [];
+    }
   });
 
   /* ============================================================
@@ -4955,7 +5060,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     };
     const inf = ce('div', '', box);
     inf.style.cssText = 'margin-top:14px;padding:12px;border-radius:6px;background:rgba(59,130,246,.08);font-size:11.5px;line-height:1.75;color:#c4c7cf;';
-    inf.innerHTML = '<b style="color:#93c5fd;">AeroClient v32.2.0</b> (Beta)<br>Mods: ' + Mods.all().length + '<br>Start: R-Shift / F8<br><br><b style="color:#93c5fd;">Storage</b><br>Settings: <code>ac.cfg.v29</code> (+ .bak)<br>Plugins: <code>ac-plugins-db</code><br>MP3: <code>ac-db</code>';
+    inf.innerHTML = '<b style="color:#93c5fd;">AeroClient v32.4.0</b> (Beta)<br>Mods: ' + Mods.all().length + '<br>Start: R-Shift / F8<br><br><b style="color:#93c5fd;">Storage</b><br>Settings: <code>ac.cfg.v29</code> (+ .bak)<br>Plugins: <code>ac-plugins-db</code><br>MP3: <code>ac-db</code>';
   }
   function renderKeybind(box) {
     const tt = ce('div', 'ac-section-title', box); tt.textContent = 'KEYBIND EDITOR';
@@ -5388,9 +5493,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     const w = ce('div', '', container);
     w.style.cssText = 'max-width:520px;padding:20px;';
     w.innerHTML =
-      '<div style="font-size:18px;font-weight:800;color:#fff;margin-bottom:4px;">AeroClient v32.2.0</div>' +
+      '<div style="font-size:18px;font-weight:800;color:#fff;margin-bottom:4px;">AeroClient v32.4.0</div>' +
       '<div style="font-size:12px;color:#8a8d96;margin-bottom:20px;">MineFun.io Integrated Client — Beta</div>' +
-      '<div style="padding:14px;border-radius:8px;background:#232328;font-size:12px;line-height:1.9;color:#c4c7cf;">Mods: <b style="color:#93c5fd;">' + Mods.all().length + '</b><br>Open key: <b style="color:#93c5fd;">R-Shift</b> / F8<br><br><b>v32.2 changes:</b><br>· Pixel Editor: cells paint under Aero/Moon themes<br>· Pixel Editor: red center crosshair guide<br>· Crosshair: smooth size slider (CSS transform)<br>· Stats: FPS/CPS/PING stay on one line<br>· Screenshot: guaranteed HUD restore<br><br><b>v32.1 changes:</b><br>· Block Outline: Celestar port (material color only)<br>· GUI Theme: dropdown (Default / Aero / Moon)<br><br><b>v31.2 changes:</b><br>· TNO Theme integrated as built-in MOD<br>· Every MOD now has a unique, intuitive icon<br><br><b>Storage:</b><br>· Settings → <code>ac.cfg.v29</code> (+ .bak)<br>· Plugins → <code>ac-plugins-db</code><br>· MP3 → <code>ac-db</code></div>';
+      '<div style="padding:14px;border-radius:8px;background:#232328;font-size:12px;line-height:1.9;color:#c4c7cf;">Mods: <b style="color:#93c5fd;">' + Mods.all().length + '</b><br>Open key: <b style="color:#93c5fd;">R-Shift</b> / F8<br><br><b>v32.4 changes:</b><br>· Canvas Resize Fix built into core<br>· Screenshot: HUD restore bug fixed (MP3 / Compass no longer stuck hidden)<br>· Keybind: removed Debug entry<br><br><b>v32.2 changes:</b><br>· Pixel Editor: cells paint under Aero/Moon themes<br>· Pixel Editor: red center crosshair guide<br>· Crosshair: smooth size slider (CSS transform)<br>· Stats: FPS/CPS/PING stay on one line<br>· Screenshot: guaranteed HUD restore<br><br><b>v32.1 changes:</b><br>· Block Outline: Celestar port (material color only)<br>· GUI Theme: dropdown (Default / Aero / Moon)<br><br><b>v31.2 changes:</b><br>· TNO Theme integrated as built-in MOD<br>· Every MOD now has a unique, intuitive icon<br><br><b>Storage:</b><br>· Settings → <code>ac.cfg.v29</code> (+ .bak)<br>· Plugins → <code>ac-plugins-db</code><br>· MP3 → <code>ac-db</code></div>';
   }
 
   function open_() {
@@ -5800,7 +5905,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
   document.addEventListener('mouseup', e => { Input._up('Mouse' + e.button); }, true);
 
   window.AeroClient = {
-    version: '32.2.0-beta',
+    version: '32.4.0-beta',
     Config, Mods, HUD, GUI, Editor, Reach, Game, Physics, PointerLock, PixelEditor, IDB, PDB, Confirm, Plugins, ICONS,
     StatsInline,
     open: () => GUI.open(),
@@ -5822,12 +5927,11 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     }
   };
 
-  console.log('%c✦ AeroClient v32.2.0 BETA', 'color:#93c5fd;font-weight:bold;font-size:13px;background:#0f0f11;padding:4px 8px;border-radius:4px');
+  console.log('%c✦ AeroClient v32.4.0 BETA', 'color:#93c5fd;font-weight:bold;font-size:13px;background:#0f0f11;padding:4px 8px;border-radius:4px');
   console.log('  Start: R-Shift / F8');
   console.log('  Mods:', Mods.all().length);
-  console.log('  + Pixel Editor: cells paint under themes + center crosshair');
-  console.log('  + Crosshair: smooth size slider');
-  console.log('  + Stats: FPS/CPS/PING stay on one line');
-  console.log('  + Screenshot: guaranteed HUD restore');
+  console.log('  + Canvas Resize Fix built into core');
+  console.log('  + Screenshot: HUD restore bug fixed (MP3 / Compass)');
+  console.log('  + Keybind: Debug entry removed');
   console.log('  Storage: ac.cfg.v29 (+ .bak) / ac-plugins-db / ac-db');
 })();
