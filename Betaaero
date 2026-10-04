@@ -3151,7 +3151,11 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     id: 'hurtcam', name: 'No Hurt Cam', category: 'Gameplay', icon: 'svg:heartBreak', description: 'Disable damage camera shake', defaultEnabled: false, settings: [],
     init() {
       const st = this;
-      st._orig = null; st._patched = false;
+           st._orig = null; st._patched = false; st._patchedPlayer = null;
+      // Stable noop we can identity-check against. If the game ever replaces
+      // playDmgAnimation on its own (respawn / new match), we detect the
+      // mismatch and re-patch instead of trusting a boolean flag.
+      st._noop = function () {};
       st._getPlayer = () => {
         try {
           const app = document.querySelector('#app');
@@ -3166,19 +3170,29 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         } catch (e) { return null; }
       };
       st._applyPatch = () => {
-        if (st._patched) return true;
         const p = st._getPlayer();
         if (!p || typeof p.playDmgAnimation !== 'function') return false;
-        try { st._orig = p.playDmgAnimation; p.playDmgAnimation = function() {}; st._patched = true; return true; }
-        catch (e) { return false; }
+        // Already patched on this exact player object?
+        if (p === st._patchedPlayer && p.playDmgAnimation === st._noop) return true;
+        // Player changed (new match / respawn) or patch was overwritten.
+        st._orig = p.playDmgAnimation;
+        try {
+          p.playDmgAnimation = st._noop;
+          st._patchedPlayer = p;
+          st._patched = true;
+          return true;
+        } catch (e) { return false; }
       };
       st._removePatch = () => {
-        if (!st._patched) return;
-        const p = st._getPlayer();
+        const p = st._patchedPlayer;
         if (p && st._orig) { try { p.playDmgAnimation = st._orig; } catch (e) {} }
-        st._patched = false; st._orig = null;
+        st._patched = false;
+        st._patchedPlayer = null;
+        st._orig = null;
       };
-      st._iid = setInterval(() => { if (Mods.on('hurtcam') && !st._patched) st._applyPatch(); }, 3000);
+      // 500ms keeps the check cheap (identity compare) while ensuring the
+      // patch lands quickly after entering a match.
+      st._iid = setInterval(() => { if (Mods.on('hurtcam')) st._applyPatch(); }, 500);
     },
     apply(enabled) { const st = this; if (enabled) st._applyPatch(); else st._removePatch(); },
     destroy() { const st = this; if (st._iid) clearInterval(st._iid); st._removePatch(); }
