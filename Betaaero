@@ -5447,7 +5447,10 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     };
     function close() { mask.remove(); }
   }
-  function draw() {
+ function draw() {
+    // If the previously selected mod was unregistered (plugin removed, etc.),
+    // drop it so the detail panel doesn't try to render a dead object.
+    if (selectedMod && Mods.get(selectedMod.id) !== selectedMod) selectedMod = null;
     if (!ov) { ov = ce('div', 'ac-overlay'); document.body.appendChild(ov); }
     ov.innerHTML = '';
     ov.onclick = e => { if (e.target === ov) close_(); };
