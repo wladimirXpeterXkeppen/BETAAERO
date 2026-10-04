@@ -5526,7 +5526,8 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     try { if (Editor && typeof Editor.isOpen === 'function' && Editor.isOpen()) Editor.close(); } catch (_) {}
     if (ov) { ov.remove(); ov = null; }
     open = false;
-    selectedMod = null;
+    // NOTE: intentionally NOT resetting selectedMod / cat / search / currentNav
+    // so reopening the GUI returns to the last-viewed screen.
     document.removeEventListener('keydown', esc, true);
     PointerLock.fixCanvas();
     PointerLock.acquire();
