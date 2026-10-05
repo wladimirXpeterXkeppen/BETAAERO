@@ -5489,9 +5489,20 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       inp.value = search;
       inp.oninput = () => { search = inp.value; renderGrid(grid); };
       const grid = ce('div', 'ac-grid', main);
-      if (currentNav === 'mods') renderGrid(grid);
-      else if (currentNav === 'settings') { grid.style.display = 'block'; grid.style.gridTemplateColumns = 'none'; renderInline(grid); }
-      else if (currentNav === 'about') { grid.style.display = 'block'; grid.style.gridTemplateColumns = 'none'; renderAbout(grid); }
+      // Remember scroll position so reopening the GUI returns to the same spot.
+      grid.addEventListener('scroll', () => { savedScroll = grid.scrollTop; }, { passive: true });
+      if (currentNav === 'mods') {
+        renderGrid(grid);
+        grid.scrollTop = savedScroll;
+      } else if (currentNav === 'settings') {
+        grid.style.display = 'block'; grid.style.gridTemplateColumns = 'none';
+        renderInline(grid);
+        grid.scrollTop = savedScroll;
+      } else if (currentNav === 'about') {
+        grid.style.display = 'block'; grid.style.gridTemplateColumns = 'none';
+        renderAbout(grid);
+        grid.scrollTop = savedScroll;
+      }
       const det = ce('div', 'ac-detail' + (selectedMod ? ' open' : ''), body);
       if (selectedMod) renderDetail(det, selectedMod);
     }
