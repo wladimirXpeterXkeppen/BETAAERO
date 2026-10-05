@@ -4929,7 +4929,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
   /* ===== GUI ===== */
   const CATS = ['all', 'favorites', 'HUD', 'Performance', 'Gameplay', 'Visual', 'Controls'];
   let ov = null, open = false, cat = 'all', search = '', selectedMod = null, currentNav = 'mods';
-
+  let savedScroll = 0;
   function iconHTML(m) {
     if (m.icon && m.icon.startsWith('svg:')) return ICONS[m.icon.slice(4)] || ICONS.grid;
     if (m.icon && (m.icon.startsWith('http') || m.icon.startsWith('data:'))) return '<img src="' + m.icon + '" alt="">';
