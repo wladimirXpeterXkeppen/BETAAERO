@@ -2715,7 +2715,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           const box = getB(e);
           if (useOccl && isOccluded(p, box)) return;
           const isReach = !!s.reachMode && useReach;
-          drawBox(p, box.half, isReach, baseColor, rc, borderHex, mode, lw, s.showVertices, s.glowReach);
+          // v32.5: pass reachBorder so only the reach target's border can
+          // be fully opaque.
+          drawBox(p, box.half, isReach, baseColor, rc, borderHex, mode, lw, s.showVertices, s.glowReach, rcBorder);
         }
         if (s.showPlayers) {
           const list = Game.players(gw);
