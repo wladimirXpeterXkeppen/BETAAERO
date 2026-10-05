@@ -2264,6 +2264,19 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       document.body.appendChild(cv);
       const ctx = cv.getContext('2d');
       st._el = cv;
+      // v32.5: CSS blend + opacity on the canvas element itself.
+      // 'difference' inverts whatever color sits behind the crosshair,
+      // so it stays visible on any background (walls, sky, players).
+      function applyVisuals() {
+        const s = Config.get('mods.crosshair') || {};
+        const blend = s.blendMode || 'difference';
+        const op = (s.opacity == null) ? 1 : s.opacity;
+        if (blend === 'normal') cv.style.removeProperty('mix-blend-mode');
+        else cv.style.setProperty('mix-blend-mode', blend);
+        if (op >= 1) cv.style.removeProperty('opacity');
+        else cv.style.setProperty('opacity', String(op));
+      }
+      st._applyVisuals = applyVisuals;
       const urlCache = new Map();
       function center() {
         const w = parseFloat(cv.style.width) || 0;
