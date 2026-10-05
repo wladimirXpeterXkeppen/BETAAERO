@@ -2376,12 +2376,13 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
 
       st._invalidate = () => { last = null; st._dirty = true; };
       st._cfg = null; st._nPG = null; st._tPG = null; st._dirty = true; st._lastTarget = undefined;
-      st._refreshCfg = () => {
+          st._refreshCfg = () => {
         st._cfg = Config.get('mods.crosshair') || {};
         st._nPG = Config.get('mods.crosshair.normalPixelGrids', {}) || {};
         st._tPG = Config.get('mods.crosshair.targetPixelGrids', {}) || {};
         st._dirty = true;
         _smoothKey = ''; // force smooth re-apply
+        applyVisuals();  // v32.5: re-apply blend / opacity on config change
       };
       st._refreshCfg();
       st._lastDpr = dprCap();
