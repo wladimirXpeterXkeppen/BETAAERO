@@ -2524,7 +2524,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       resize();
       window.addEventListener('resize', resize);
       st._resize = resize;
-      st._matInv = null; st._matProj = null;
+      st._matInv = null; st._matProj = null; st._projBuf = null;
       function espProject(wx, wy, wz, out) {
         if (!st._matInv || !st._matProj) return null;
         const ve = st._matInv, pj = st._matProj;
