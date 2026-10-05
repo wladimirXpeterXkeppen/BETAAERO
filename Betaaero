@@ -3185,7 +3185,10 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         delete st._activeGL.__mfZoom_patched;
       }
       st._activeGL = null;
-    }
+    },
+    // v32.5: expose current zoom scale so other MODs (esp. Hitbox) can
+    // compensate their projection math. Returns 1 when not zooming.
+    _getScale() { return this._zC || 1; }
   });
 
   /* ===== MOD: No Hurt Cam ===== */
