@@ -2669,6 +2669,12 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         const lw = s.lineWidth || 2;
         const pc = hexA(s.playerColor || '#00ff88', (s.playerFillAlpha || 25) / 100);
         const rc = hexA(s.reachColor || '#ff5577', (s.reachFillAlpha || 45) / 100);
+        // v32.5: reach target border. Opaque by default so it stands out
+        // even when the fill is semi-transparent. Falls back to the fill
+        // color when "Reach border opaque" is OFF.
+        const rcBorder = (s.reachBorderOpaque !== false)
+          ? (s.reachColor || '#ff5577')
+          : rc;
         const selfId = me.sessionId || me.id;
         // v32.5: DDA occlusion is always enforced. Even if a legacy config
         // still has ddaOcclusion=false, we ignore it to prevent ESP.
