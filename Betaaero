@@ -1908,7 +1908,751 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     destroy() { const st = this; st._stop && st._stop(); if (st._img) st._img.onload = null; }
   });
 
-  /* ===== MOD: FPS Booster ===== */
+  /* ===== MOD: Speedometer ===== */
+  (function () {
+    /* ---- Toast ---- */
+    let _toastBox = null;
+    function ensureToastBox() {
+      if (_toastBox && document.body.contains(_toastBox)) return _toastBox;
+      _toastBox = ce('div');
+      _toastBox.style.cssText =
+        'position:fixed;bottom:20px;right:20px;z-index:2147483647;' +
+        'display:flex;flex-direction:column;gap:8px;pointer-events:none;' +
+        'font-family:Inter,"Segoe UI",Arial,sans-serif;';
+      document.body.appendChild(_toastBox);
+      return _toastBox;
+    }
+    function showToast(name, enabled) {
+      const c = ensureToastBox();
+      const accent = enabled ? '#22c55e' : '#ef4444';
+      const el = ce('div');
+      el.style.cssText =
+        'background:rgba(15,15,17,.96);color:#fff;padding:10px 16px;' +
+        'border-radius:8px;border-left:4px solid ' + accent + ';' +
+        'font-size:13px;font-weight:600;' +
+        'box-shadow:0 10px 30px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.05);' +
+        'transform:translateX(120%);opacity:0;' +
+        'transition:transform .28s cubic-bezier(.2,.9,.4,1.1),opacity .28s;' +
+        'pointer-events:none;max-width:280px;white-space:nowrap;' +
+        'display:flex;align-items:center;gap:10px;';
+      el.innerHTML =
+        '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;' +
+        'background:' + accent + ';box-shadow:0 0 8px ' + accent + ';"></span>' +
+        '<span style="color:' + accent + ';font-weight:800;font-size:11px;letter-spacing:.1em;">' +
+        (enabled ? 'ON' : 'OFF') + '</span>' +
+        '<span style="color:#e6e9ef;">' + name + '</span>';
+      c.appendChild(el);
+      requestAnimationFrame(function () { el.style.transform = 'translateX(0)'; el.style.opacity = '1'; });
+      setTimeout(function () {
+        el.style.transform = 'translateX(120%)';
+        el.style.opacity = '0';
+        setTimeout(function () { try { el.remove(); } catch (_) {} }, 320);
+      }, 2000);
+    }
+
+    /* ---- "None" keybind support ---- */
+    (function () {
+      const orig = Mods.ss.bind(Mods);
+      Mods.ss = function (id, k, v) {
+        if (k === 'keybind' && typeof id === 'string' && id.indexOf('speedometer') === 0) {
+          if (v === 'Escape' || v === null || v === undefined || v === '') v = 'None';
+        }
+        return orig(id, k, v);
+      };
+    })();
+
+    /* ---- Chat-safe typing detection ---- */
+    function isInputElement(el) {
+      if (!el || el.nodeType !== 1) return false;
+      if (el.tagName === 'TEXTAREA') return true;
+      if (el.isContentEditable) return true;
+      if (el.tagName === 'INPUT') {
+        const t = String(el.type || 'text').toLowerCase();
+        if (t === 'color' || t === 'file' || t === 'checkbox' || t === 'radio' ||
+            t === 'range' || t === 'button' || t === 'submit' || t === 'reset' ||
+            t === 'image') return false;
+        return true;
+      }
+      return false;
+    }
+    let _focusedInput = null;
+    document.addEventListener('focusin', function (e) {
+      let n = e.target, d = 0;
+      while (n && n.nodeType === 1 && d < 30 && n !== document.documentElement) {
+        if (isInputElement(n)) { _focusedInput = n; return; }
+        n = n.parentElement; d++;
+      }
+    }, true);
+    document.addEventListener('focusout', function (e) {
+      if (_focusedInput && (e.target === _focusedInput ||
+          (_focusedInput.contains && _focusedInput.contains(e.target)))) {
+        _focusedInput = null;
+      }
+    }, true);
+    let _lastInputTime = 0;
+    function markInput(e) {
+      let n = e.target, d = 0;
+      while (n && n.nodeType === 1 && d < 30 && n !== document.documentElement) {
+        if (isInputElement(n)) { _lastInputTime = performance.now(); return; }
+        n = n.parentElement; d++;
+      }
+    }
+    document.addEventListener('beforeinput', markInput, true);
+    document.addEventListener('input', markInput, true);
+    let _plEverUsed = false;
+    document.addEventListener('pointerlockchange', function () {
+      if (document.pointerLockElement) _plEverUsed = true;
+    }, true);
+    function isGuiOpen() {
+      try { if (GUI && typeof GUI.isOpen === 'function' && GUI.isOpen()) return true; } catch (_) {}
+      if (document.body.classList.contains('ac-editing')) return true;
+      if (document.querySelector('.ac-modal-mask')) return true;
+      return false;
+    }
+    function isTypingContext(e) {
+      if (_focusedInput && document.contains(_focusedInput)) return true;
+      if (_lastInputTime && performance.now() - _lastInputTime < 700) return true;
+      if (e) {
+        let n = e.target, d = 0;
+        while (n && n.nodeType === 1 && d < 30 && n !== document.documentElement) {
+          if (isInputElement(n)) return true;
+          n = n.parentElement; d++;
+        }
+      }
+      let a = document.activeElement;
+      if (a && a !== document.body && a !== document.documentElement) {
+        let n = a, d = 0;
+        while (n && n.nodeType === 1 && d < 30 && n !== document.documentElement) {
+          if (isInputElement(n)) return true;
+          n = n.parentElement; d++;
+        }
+      }
+      if (_plEverUsed && !document.pointerLockElement) return true;
+      return false;
+    }
+
+    function isInGame()    { return !document.body.classList.contains('ac-not-in-game'); }
+    function isEditingHud(){ return document.body.classList.contains('ac-editing'); }
+
+    /* ---- Theme presets ---- */
+    const THEMES = {
+      'default': {
+        bg: 'rgba(15,15,20,0.72)', border: 'rgba(255,255,255,0.08)', borderWidth: 1,
+        radius: 6, label: '#8a8d96', number: '#ffffff', unit: '#93c5fd',
+        extra: '#8a8d96', graph: '#3b82f6', barBg: 'rgba(255,255,255,0.08)', blur: 6
+      },
+      aero: {
+        bg: 'rgba(10,15,24,0.82)', border: '#4ac8e8', borderWidth: 1,
+        radius: 3, label: '#4ac8e8', number: '#b8e4f0', unit: '#7bdbef',
+        extra: '#4a7a8a', graph: '#4ac8e8', barBg: 'rgba(74,200,232,0.12)', blur: 8
+      },
+      moon: {
+        bg: 'rgba(10,5,24,0.82)', border: '#5a4090', borderWidth: 1,
+        radius: 4, label: '#8a78b0', number: '#e8ddf5', unit: '#e8d8a8',
+        extra: '#8a78b0', graph: '#c8b8e8', barBg: 'rgba(200,184,232,0.15)', blur: 8
+      },
+      transparent: {
+        bg: 'transparent', border: 'transparent', borderWidth: 0,
+        radius: 0, label: '#ffffff', number: '#ffffff', unit: '#dddddd',
+        extra: '#cccccc', graph: '#ffffff', barBg: 'rgba(255,255,255,0.15)', blur: 0
+      },
+      minimal: {
+        bg: 'rgba(0,0,0,0.35)', border: 'transparent', borderWidth: 0,
+        radius: 4, label: '#ffffff', number: '#ffffff', unit: '#ffffff',
+        extra: '#ffffff', graph: '#ffffff', barBg: 'rgba(255,255,255,0.1)', blur: 3
+      },
+      neon: {
+        bg: 'rgba(0,0,0,0.55)', border: '#00ffff', borderWidth: 1,
+        radius: 4, label: '#00ffff', number: '#ffffff', unit: '#00ffff',
+        extra: '#00ffff', graph: '#00ffff', barBg: 'rgba(0,255,255,0.15)', blur: 6
+      },
+      glass: {
+        bg: 'rgba(255,255,255,0.08)', border: 'rgba(255,255,255,0.2)', borderWidth: 1,
+        radius: 8, label: 'rgba(255,255,255,0.7)', number: '#ffffff', unit: 'rgba(255,255,255,0.7)',
+        extra: 'rgba(255,255,255,0.6)', graph: '#ffffff', barBg: 'rgba(255,255,255,0.15)', blur: 14
+      }
+    };
+
+    /* ---- Helpers ---- */
+    function hexToRgba(hex, alpha) {
+      if (!hex || hex[0] !== '#') return hex;
+      let x = hex.slice(1);
+      if (x.length === 3) x = x.split('').map(function (c) { return c + c; }).join('');
+      if (x.length !== 6) return hex;
+      const r = parseInt(x.slice(0, 2), 16);
+      const g = parseInt(x.slice(2, 4), 16);
+      const b = parseInt(x.slice(4, 6), 16);
+      return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+    }
+    function setVis(parent, sel, show) {
+      const el = parent.querySelector(sel);
+      if (!el) return;
+      el.style.display = show ? '' : 'none';
+    }
+
+    /* ---- State ---- */
+    const SMOOTH = 0.18;
+    const HIST_MAX = 180;
+    const state = {
+      speed: 0, vSpeed: 0, maxSpeed: 0,
+      history: [],
+      lastPos: null, lastTime: 0,
+      rafId: 0, running: false,
+      hudEl: null,
+      wasInGame: false,
+      rainbowHue: 0
+    };
+    function resetStats() {
+      state.speed = 0; state.vSpeed = 0; state.maxSpeed = 0;
+      state.history.length = 0;
+      state.lastPos = null; state.lastTime = 0;
+    }
+
+    /* ---- Graph rendering ---- */
+    function drawGraph(canvas, mode, graphColor) {
+      if (!canvas) return;
+      const w = canvas.clientWidth || 120;
+      const h = canvas.clientHeight || 30;
+      if (w <= 0 || h <= 0) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+      }
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      const hist = state.history;
+      if (hist.length < 2) return;
+      const pts = [];
+      for (let i = 0; i < hist.length; i++) {
+        const x = hist[i];
+        let v;
+        if (mode === 'vertical')   v = x.v;
+        else if (mode === 'total') v = x.total;
+        else                       v = x.h;
+        pts.push(v);
+      }
+      let dataMax = 0.5;
+      for (let i = 0; i < pts.length; i++) if (pts[i] > dataMax) dataMax = pts[i];
+      dataMax *= 1.15;
+      const padT = 1.5, padB = 1.5;
+      const usableH = Math.max(1, h - padT - padB);
+      const step = w / (pts.length - 1);
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i++) {
+        const x = i * step;
+        const y = padT + usableH - (pts[i] / dataMax) * usableH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = graphColor;
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.stroke();
+      ctx.lineTo(w, h);
+      ctx.lineTo(0, h);
+      ctx.closePath();
+      ctx.fillStyle = hexToRgba(graphColor, 0.22);
+      ctx.fill();
+    }
+
+    /* ---- Style application ---- */
+    function applyStyle(el) {
+      if (!el) return;
+      const s = el.querySelector('.ac-spd');
+      if (!s) return;
+      const themeName = Mods.gs('speedometer', 'theme', 'default');
+      let bg, border, borderWidth, radius, labelC, numberC, unitC, extraC, graphC, barBg, blur;
+      if (themeName === 'custom') {
+        const bgHex   = Mods.gs('speedometer', 'customBg', '#0f0f14');
+        const bgAlpha = Mods.gs('speedometer', 'customBgAlpha', 0.72);
+        bg = hexToRgba(bgHex, bgAlpha);
+        border = Mods.gs('speedometer', 'customBorder', '#ffffff');
+        borderWidth = Mods.gs('speedometer', 'customBorderWidth', 1);
+        radius = Mods.gs('speedometer', 'customRadius', 6);
+        labelC  = Mods.gs('speedometer', 'customLabelColor', '#8a8d96');
+        numberC = Mods.gs('speedometer', 'customNumberColor', '#ffffff');
+        unitC   = Mods.gs('speedometer', 'customUnitColor', '#93c5fd');
+        extraC  = Mods.gs('speedometer', 'customExtraColor', '#8a8d96');
+        graphC  = Mods.gs('speedometer', 'customGraphColor', '#3b82f6');
+        const barBgHex = Mods.gs('speedometer', 'customBarBg', '#ffffff');
+        barBg = hexToRgba(barBgHex, 0.12);
+        blur = Mods.gs('speedometer', 'blur', 6);
+      } else if (themeName === 'rainbow') {
+        bg = 'rgba(0,0,0,0.5)';
+        border = 'hsl(' + state.rainbowHue + ',100%,65%)';
+        borderWidth = 1;
+        radius = 6;
+        labelC  = 'hsl(' + state.rainbowHue + ',100%,65%)';
+        numberC = '#ffffff';
+        unitC   = 'hsl(' + state.rainbowHue + ',100%,65%)';
+        extraC  = 'hsl(' + state.rainbowHue + ',100%,65%)';
+        graphC  = 'hsl(' + state.rainbowHue + ',100%,65%)';
+        barBg   = 'rgba(255,255,255,0.1)';
+        blur = 6;
+      } else {
+        const t = THEMES[themeName] || THEMES['default'];
+        bg = t.bg; border = t.border; borderWidth = t.borderWidth;
+        radius = t.radius; labelC = t.label; numberC = t.number;
+        unitC = t.unit; extraC = t.extra; graphC = t.graph;
+        barBg = t.barBg; blur = t.blur;
+      }
+      const numberSize = Mods.gs('speedometer', 'numberSize', 26);
+      const padding    = Mods.gs('speedometer', 'padding', 8);
+      const opacity    = Mods.gs('speedometer', 'opacity', 1);
+      const minWidth   = Mods.gs('speedometer', 'minWidth', 0);
+      const numAlign   = Mods.gs('speedometer', 'numberAlign', 'left');
+      const hAlign     = Mods.gs('speedometer', 'hAlign', 'flex-start');
+      const orientation= Mods.gs('speedometer', 'orientation', 'vertical');
+      const showShadow = Mods.gs('speedometer', 'showShadow', true);
+
+      s.style.setProperty('--spd-bg', bg);
+      s.style.setProperty('--spd-border', border);
+      s.style.setProperty('--spd-border-width', borderWidth + 'px');
+      s.style.setProperty('--spd-radius', radius + 'px');
+      s.style.setProperty('--spd-label-color', labelC);
+      s.style.setProperty('--spd-number-color', numberC);
+      s.style.setProperty('--spd-unit-color', unitC);
+      s.style.setProperty('--spd-extra-color', extraC);
+      s.style.setProperty('--spd-graph-color', graphC);
+      s.style.setProperty('--spd-bar-bg', barBg);
+      s.style.setProperty('--spd-num-size', numberSize + 'px');
+      s.style.setProperty('--spd-pad', padding + 'px');
+      s.style.setProperty('--spd-minw', minWidth + 'px');
+      s.style.setProperty('--spd-num-align', numAlign);
+      s.style.setProperty('--spd-halign', hAlign);
+      s.style.opacity = String(opacity);
+      s.dataset.orientation = (orientation === 'horizontal') ? 'horizontal' : 'vertical';
+
+      const autoNoShadow = (themeName === 'transparent' || themeName === 'minimal');
+      const useShadow = showShadow && !autoNoShadow;
+      s.style.setProperty('--spd-shadow', useShadow ? '0 4px 16px rgba(0,0,0,.35)' : 'none');
+
+      if (blur > 0) {
+        s.style.backdropFilter = 'blur(' + blur + 'px)';
+        s.style.webkitBackdropFilter = 'blur(' + blur + 'px)';
+      } else {
+        s.style.backdropFilter = 'none';
+        s.style.webkitBackdropFilter = 'none';
+      }
+
+      const showLabel  = Mods.gs('speedometer', 'showLabel', true);
+      const showUnit   = Mods.gs('speedometer', 'showUnit', true);
+      const showNumber = Mods.gs('speedometer', 'showNumber', true);
+      const showBar    = Mods.gs('speedometer', 'showBar', true);
+      const showMax    = Mods.gs('speedometer', 'showMax', true);
+      const showAvg    = Mods.gs('speedometer', 'showAvg', true);
+      const showGraph  = Mods.gs('speedometer', 'showGraph', false);
+      const graphH     = Mods.gs('speedometer', 'graphHeight', 30);
+
+      setVis(el, '.spd-label',  showLabel);
+      setVis(el, '.spd-unit',   showUnit);
+      setVis(el, '.spd-num',    showNumber);
+      setVis(el, '.spd-bar',    showBar);
+      setVis(el, '.spd-max',    showMax);
+      setVis(el, '.spd-avg',    showAvg);
+
+      const g = el.querySelector('.spd-graph');
+      if (g) {
+        const show = showGraph && graphH > 0;
+        g.style.display = show ? 'block' : 'none';
+        g.style.height = graphH + 'px';
+      }
+      const header = el.querySelector('.spd-header');
+      if (header) header.style.display = (showLabel || showUnit) ? '' : 'none';
+      const extra = el.querySelector('.spd-extra');
+      if (extra) extra.style.display = (showMax || showAvg) ? '' : 'none';
+    }
+
+    /* ---- Tick loop ---- */
+    function tick() {
+      if (!state.running) return;
+      state.rafId = requestAnimationFrame(tick);
+      const inGame = isInGame() || isEditingHud();
+      if (inGame && !state.wasInGame) resetStats();
+      state.wasInGame = inGame;
+      if (!inGame) return;
+      const gw = Game.world();
+      if (!gw || !gw.player) { state.lastPos = null; return; }
+      const p = gw.player.position;
+      if (!p || typeof p.x !== 'number') return;
+      const now = performance.now();
+      if (state.lastPos) {
+        const dtMs = now - state.lastTime;
+        if (dtMs > 0 && dtMs < 500) {
+          const dt = dtMs / 1000;
+          const dx = p.x - state.lastPos.x;
+          const dy = p.y - state.lastPos.y;
+          const dz = p.z - state.lastPos.z;
+          const hSpeed = Math.sqrt(dx * dx + dz * dz) / dt;
+          const vSpeed = Math.abs(dy) / dt;
+          const tSpeed = Math.sqrt(dx * dx + dy * dy + dz * dz) / dt;
+          let fSpeed = 0;
+          try {
+            const rot = gw.player.rotation;
+            const yaw = (typeof rot === 'number') ? rot
+                      : (rot && typeof rot.y === 'number') ? rot.y : 0;
+            const fx = Math.sin(yaw);
+            const fz = Math.cos(yaw);
+            fSpeed = (dx * fx + dz * fz) / dt;
+          } catch (_) { fSpeed = hSpeed; }
+          const mode = Mods.gs('speedometer', 'mode', 'horizontal');
+          let primary;
+          switch (mode) {
+            case 'vertical': primary = vSpeed; break;
+            case 'total':    primary = tSpeed; break;
+            case 'forward':  primary = fSpeed; break;
+            case 'all':      primary = hSpeed; break;
+            default:         primary = hSpeed; break;
+          }
+          state.speed = state.speed + (primary - state.speed) * SMOOTH;
+          if (state.speed > state.maxSpeed) state.maxSpeed = state.speed;
+          if (mode === 'all') {
+            state.vSpeed = state.vSpeed + (vSpeed - state.vSpeed) * SMOOTH;
+          }
+          state.history.push({ t: now, h: hSpeed, v: vSpeed, total: tSpeed });
+          while (state.history.length > HIST_MAX) state.history.shift();
+        }
+      }
+      state.lastPos = { x: p.x, y: p.y, z: p.z };
+      state.lastTime = now;
+      updateHud();
+    }
+
+    /* ---- HUD update ---- */
+    function unitFactor(u) {
+      if (u === 'kmh') return 3.6;
+      if (u === 'mph') return 2.23694;
+      return 1;
+    }
+    function unitLabel(u) {
+      if (u === 'kmh') return 'km/h';
+      if (u === 'mph') return 'mph';
+      if (u === 'ms')  return 'm/s';
+      return 'b/s';
+    }
+    function updateHud() {
+      const el = state.hudEl;
+      if (!el) return;
+      const theme    = Mods.gs('speedometer', 'theme', 'default');
+      const mode     = Mods.gs('speedometer', 'mode', 'horizontal');
+      const unit     = Mods.gs('speedometer', 'unit', 'bs');
+      const decimals = Mods.gs('speedometer', 'decimals', 2);
+      const barMax   = Mods.gs('speedometer', 'barMax', 15) || 15;
+      const showGraph= Mods.gs('speedometer', 'showGraph', false);
+      const f = unitFactor(unit);
+      if (theme === 'rainbow') {
+        state.rainbowHue = (state.rainbowHue + 1.2) % 360;
+        const s = el.querySelector('.ac-spd');
+        if (s) {
+          const col = 'hsl(' + state.rainbowHue + ',100%,65%)';
+          s.style.setProperty('--spd-border', col);
+          s.style.setProperty('--spd-label-color', col);
+          s.style.setProperty('--spd-unit-color', col);
+          s.style.setProperty('--spd-extra-color', col);
+          s.style.setProperty('--spd-graph-color', col);
+        }
+      }
+      const numEl  = el.querySelector('.spd-num');
+      const unitEl = el.querySelector('.spd-unit');
+      const maxEl  = el.querySelector('.spd-max');
+      const avgEl  = el.querySelector('.spd-avg');
+      const fillEl = el.querySelector('.spd-bar-fill');
+      const vertEl = el.querySelector('.spd-vert');
+      if (numEl)  numEl.textContent  = (state.speed * f).toFixed(decimals);
+      if (unitEl) unitEl.textContent = unitLabel(unit);
+      if (vertEl) {
+        if (mode === 'all') {
+          vertEl.style.display = '';
+          vertEl.textContent = 'H ' + (state.speed * f).toFixed(decimals) +
+                               '  V ' + (state.vSpeed * f).toFixed(decimals);
+        } else {
+          vertEl.style.display = 'none';
+        }
+      }
+      if (maxEl) maxEl.textContent = 'max ' + (state.maxSpeed * f).toFixed(decimals);
+      if (avgEl) {
+        if (!state.history.length) {
+          avgEl.textContent = 'avg 0.' + '0'.repeat(decimals);
+        } else {
+          let sum = 0;
+          for (let i = 0; i < state.history.length; i++) {
+            const h = state.history[i];
+            if (mode === 'vertical')      sum += h.v;
+            else if (mode === 'total')    sum += h.total;
+            else                          sum += h.h;
+          }
+          avgEl.textContent = 'avg ' + ((sum / state.history.length) * f).toFixed(decimals);
+        }
+      }
+      if (fillEl) {
+        const pct = Math.max(0, Math.min(100, (state.speed / barMax) * 100));
+        fillEl.style.width = pct + '%';
+        let col;
+        if (pct < 33) col = '#22c55e';
+        else if (pct < 66) col = '#eab308';
+        else col = '#ef4444';
+        fillEl.style.background = col;
+      }
+      if (showGraph) {
+        const g = el.querySelector('.spd-graph');
+        if (g) {
+          const s2 = el.querySelector('.ac-spd');
+          const graphColor = theme === 'rainbow'
+            ? 'hsl(' + state.rainbowHue + ',100%,65%)'
+            : (getComputedStyle(s2).getPropertyValue('--spd-graph-color') || '#3b82f6').trim();
+          drawGraph(g, mode, graphColor);
+        }
+      }
+    }
+
+    /* ---- CSS injection ---- */
+    (function () {
+      if (document.getElementById('ac-spd-style')) return;
+      const s = document.createElement('style');
+      s.id = 'ac-spd-style';
+      s.textContent = [
+        '.ac-spd{',
+        'display:flex;flex-direction:column;gap:4px;',
+        'padding:var(--spd-pad,8px);',
+        'background:var(--spd-bg,rgba(15,15,20,.72));',
+        'border:var(--spd-border-width,1px) solid var(--spd-border,rgba(255,255,255,.08));',
+        'border-radius:var(--spd-radius,6px);',
+        'font-family:"Rajdhani","Exo 2",Inter,Arial,sans-serif;',
+        'color:#e6e9ef;',
+        'width:fit-content;min-width:var(--spd-minw,0);',
+        'box-shadow:var(--spd-shadow,0 4px 16px rgba(0,0,0,.35));',
+        'user-select:none;box-sizing:border-box;',
+        'transition:background .15s,border-color .15s;',
+        '}',
+        '.ac-spd .spd-header{',
+        'display:flex;justify-content:space-between;align-items:center;',
+        'font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;',
+        'color:var(--spd-label-color,#8a8d96);font-weight:700;',
+        '}',
+        '.ac-spd .spd-unit{color:var(--spd-unit-color,#93c5fd);font-weight:800;}',
+        '.ac-spd .spd-num{',
+        'font-size:var(--spd-num-size,26px);font-weight:800;line-height:1;',
+        'font-variant-numeric:tabular-nums;',
+        'color:var(--spd-number-color,#fff);',
+        'text-shadow:0 0 10px rgba(59,130,246,.25);',
+        'letter-spacing:.01em;text-align:var(--spd-num-align,left);',
+        '}',
+        '.ac-spd .spd-vert{',
+        'font-size:10px;color:var(--spd-unit-color,#93c5fd);font-weight:700;',
+        'font-variant-numeric:tabular-nums;letter-spacing:.04em;',
+        '}',
+        '.ac-spd .spd-graph{display:block;width:100%;height:30px;border-radius:2px;}',
+        '.ac-spd .spd-bar{',
+        'height:4px;background:var(--spd-bar-bg,rgba(255,255,255,.08));',
+        'border-radius:2px;overflow:hidden;',
+        '}',
+        '.ac-spd .spd-bar-fill{',
+        'height:100%;width:0%;background:#22c55e;border-radius:2px;',
+        'transition:width .08s linear,background .15s linear;',
+        '}',
+        '.ac-spd .spd-extra{',
+        'display:flex;justify-content:space-between;',
+        'font-size:9.5px;color:var(--spd-extra-color,#8a8d96);',
+        'font-variant-numeric:tabular-nums;letter-spacing:.04em;',
+        '}',
+        '.ac-spd .spd-extra span{font-weight:600;}',
+        '.ac-spd[data-orientation="horizontal"]{',
+        'flex-direction:row;align-items:center;gap:10px;',
+        'justify-content:var(--spd-halign,flex-start);',
+        '}',
+        '.ac-spd[data-orientation="horizontal"] .spd-header{',
+        'flex-direction:column;align-items:flex-start;gap:1px;',
+        'justify-content:center;flex-shrink:0;',
+        '}',
+        '.ac-spd[data-orientation="horizontal"] .spd-num{flex-shrink:0;}',
+        '.ac-spd[data-orientation="horizontal"] .spd-extra{',
+        'flex-direction:column;align-items:flex-start;gap:1px;',
+        'justify-content:center;flex-shrink:0;',
+        '}',
+        '.ac-spd[data-orientation="horizontal"] .spd-bar{width:60px;flex-shrink:0;}',
+        '.ac-spd[data-orientation="horizontal"] .spd-graph{width:80px;flex-shrink:0;}',
+        'body.ac-not-in-game:not(.ac-editing) .ac-hud[data-hud-id="speedometer"]{display:none!important;}'
+      ].join('');
+      document.head.appendChild(s);
+    })();
+
+    /* ---- Keybind wrapper + toggle toast ---- */
+    function attachKeybind(mod, defaultKey) {
+      mod.settings = mod.settings || [];
+      if (!mod.settings.some(function (s) { return s.id === 'keybind'; })) {
+        mod.settings.unshift({
+          id: 'keybind', type: 'keybind',
+          label: 'Toggle key', default: defaultKey || 'None'
+        });
+      }
+      let handler = null;
+      function onKeyDown(e) {
+        if (e.repeat) return;
+        if (isGuiOpen()) return;
+        if (isTypingContext(e)) return;
+        const k = Mods.gs(mod.id, 'keybind', defaultKey || 'None');
+        if (!k || k === 'None' || k === 'Escape') return;
+        if (e.code !== k) return;
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () {
+            if (isGuiOpen()) return;
+            if (isTypingContext(null)) return;
+            Mods.toggle(mod.id);
+          });
+        });
+      }
+      function start() { if (!handler) { handler = onKeyDown; window.addEventListener('keydown', handler, true); } }
+      function stop()  { if (handler) { window.removeEventListener('keydown', handler, true); handler = null; } }
+      const oA = mod.apply   ? mod.apply.bind(mod)   : function () {};
+      const oI = mod.init    ? mod.init.bind(mod)    : function () {};
+      const oD = mod.destroy ? mod.destroy.bind(mod) : function () {};
+      let lastEn = null;
+      mod.apply = function (en, st) {
+        oA(en, st); start();
+        if (lastEn !== null && lastEn !== en) showToast(mod.name, en);
+        lastEn = en;
+      };
+      mod.init    = function () { oI(); start(); };
+      mod.destroy = function () { stop(); oD(); };
+      return mod;
+    }
+
+    /* ---- Registration ---- */
+    attachKeybind(Mods.reg({
+      id: 'speedometer',
+      name: 'Speedometer',
+      category: 'HUD',
+      icon: 'svg:speedometer',
+      description: 'Fully customizable speedometer (themes, graph, orientation)',
+      defaultEnabled: false,
+      settings: [
+        { id: 'mode', type: 'dropdown', label: 'Direction', options: [
+          { value: 'horizontal', label: 'Horizontal (XZ)' },
+          { value: 'vertical',   label: 'Vertical (Y)' },
+          { value: 'total',      label: '3D total' },
+          { value: 'forward',    label: 'Forward only' },
+          { value: 'all',        label: 'All (H + V)' }
+        ], default: 'horizontal' },
+        { id: 'unit', type: 'dropdown', label: 'Unit', options: [
+          { value: 'bs',  label: 'b/s (blocks / s)' },
+          { value: 'ms',  label: 'm/s (meters / s)' },
+          { value: 'kmh', label: 'km/h' },
+          { value: 'mph', label: 'mph' }
+        ], default: 'bs' },
+        { id: 'decimals', type: 'slider', label: 'Decimals', min: 0, max: 3, step: 1, default: 2 },
+        { id: 'barMax',   type: 'slider', label: 'Bar full at', min: 5, max: 40, step: 1, default: 15 },
+        { id: 'theme', type: 'dropdown', label: 'Theme', options: [
+          { value: 'default',     label: 'Default' },
+          { value: 'aero',        label: 'Aero' },
+          { value: 'moon',        label: 'Moon' },
+          { value: 'transparent', label: 'Transparent' },
+          { value: 'minimal',     label: 'Minimal' },
+          { value: 'neon',        label: 'Neon' },
+          { value: 'glass',       label: 'Glass' },
+          { value: 'rainbow',     label: 'Rainbow' },
+          { value: 'custom',      label: 'Custom (below)' }
+        ], default: 'default' },
+        { id: 'customBg',          type: 'color',  label: '  BG color',         default: '#0f0f14' },
+        { id: 'customBgAlpha',     type: 'slider', label: '  BG opacity',       min: 0, max: 1, step: 0.05, default: 0.72 },
+        { id: 'customBorder',      type: 'color',  label: '  Border color',     default: '#ffffff' },
+        { id: 'customBorderWidth', type: 'slider', label: '  Border width',     min: 0, max: 4, step: 1, default: 1 },
+        { id: 'customRadius',      type: 'slider', label: '  Corner radius',    min: 0, max: 20, step: 1, default: 6 },
+        { id: 'customNumberColor', type: 'color',  label: '  Number color',     default: '#ffffff' },
+        { id: 'customUnitColor',   type: 'color',  label: '  Unit color',       default: '#93c5fd' },
+        { id: 'customLabelColor',  type: 'color',  label: '  Label color',      default: '#8a8d96' },
+        { id: 'customExtraColor',  type: 'color',  label: '  Max/Avg color',    default: '#8a8d96' },
+        { id: 'customGraphColor',  type: 'color',  label: '  Graph color',      default: '#3b82f6' },
+        { id: 'customBarBg',       type: 'color',  label: '  Bar background',   default: '#ffffff' },
+        { id: 'orientation', type: 'dropdown', label: 'Orientation', options: [
+          { value: 'vertical',   label: 'Vertical (stacked)' },
+          { value: 'horizontal', label: 'Horizontal (inline)' }
+        ], default: 'vertical' },
+        { id: 'minWidth',    type: 'slider',   label: 'Min width',     min: 0, max: 240, step: 4, default: 0 },
+        { id: 'numberAlign', type: 'dropdown', label: 'Number align', options: [
+          { value: 'left',   label: 'Left' },
+          { value: 'center', label: 'Center' },
+          { value: 'right',  label: 'Right' }
+        ], default: 'left' },
+        { id: 'hAlign', type: 'dropdown', label: 'Horizontal align (h-mode)', options: [
+          { value: 'flex-start', label: 'Left' },
+          { value: 'center',     label: 'Center' },
+          { value: 'flex-end',   label: 'Right' }
+        ], default: 'flex-start' },
+        { id: 'numberSize', type: 'slider', label: 'Number size', min: 12, max: 48, step: 1, default: 26 },
+        { id: 'padding',    type: 'slider', label: 'Padding',     min: 2,  max: 20, step: 1, default: 8 },
+        { id: 'opacity',    type: 'slider', label: 'Opacity',     min: 0.2, max: 1, step: 0.05, default: 1 },
+        { id: 'blur',       type: 'slider', label: 'Backdrop blur (custom)', min: 0, max: 20, step: 1, default: 6 },
+        { id: 'showShadow', type: 'toggle', label: 'Drop shadow', default: true },
+        { id: 'showLabel',   type: 'toggle', label: 'Show "SPEED" label', default: true },
+        { id: 'showNumber',  type: 'toggle', label: 'Show number',        default: true },
+        { id: 'showUnit',    type: 'toggle', label: 'Show unit',          default: true },
+        { id: 'showBar',     type: 'toggle', label: 'Show bar',           default: true },
+        { id: 'showMax',     type: 'toggle', label: 'Show max',           default: true },
+        { id: 'showAvg',     type: 'toggle', label: 'Show avg',           default: true },
+        { id: 'showGraph',   type: 'toggle', label: 'Show graph',         default: false },
+        { id: 'graphHeight', type: 'slider', label: 'Graph height (0=off)', min: 0, max: 80, step: 4, default: 30 }
+      ],
+      init() {
+        resetStats();
+        HUD.register('speedometer', {
+          modId: 'speedometer',
+          defaultX: 20,
+          defaultY: 90,
+          render(el) {
+            el.style.pointerEvents = 'none';
+            el.innerHTML =
+              '<div class="ac-spd">' +
+                '<div class="spd-header">' +
+                  '<span class="spd-label">SPEED</span>' +
+                  '<span class="spd-unit">b/s</span>' +
+                '</div>' +
+                '<div class="spd-num">0.00</div>' +
+                '<div class="spd-vert" style="display:none;"></div>' +
+                '<canvas class="spd-graph" style="display:none;"></canvas>' +
+                '<div class="spd-bar"><div class="spd-bar-fill"></div></div>' +
+                '<div class="spd-extra">' +
+                  '<span class="spd-max"></span>' +
+                  '<span class="spd-avg"></span>' +
+                '</div>' +
+              '</div>';
+            state.hudEl = el;
+            applyStyle(el);
+            updateHud();
+          },
+          update(el) {
+            state.hudEl = el;
+            applyStyle(el);
+            updateHud();
+          }
+        });
+      },
+      apply(enabled) {
+        if (enabled) {
+          if (!state.running) {
+            state.running = true;
+            state.lastPos = null;
+            state.lastTime = 0;
+            state.wasInGame = false;
+            state.rafId = requestAnimationFrame(tick);
+          }
+        } else {
+          state.running = false;
+          if (state.rafId) { cancelAnimationFrame(state.rafId); state.rafId = 0; }
+        }
+        try { HUD.sync('speedometer'); } catch (_) {}
+      },
+      destroy() {
+        state.running = false;
+        if (state.rafId) { cancelAnimationFrame(state.rafId); state.rafId = 0; }
+        state.hudEl = null;
+      }
+    }), 'KeyV');
+  })();
+
+/* ===== MOD: FPS Booster ===== */
   Mods.reg({
     id: 'fpsbooster', name: 'FPS Booster', category: 'Performance', icon: 'svg:lightning', description: 'WebGL/Effects/Timer optimization', defaultEnabled: false,
     settings: [
