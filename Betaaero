@@ -2486,7 +2486,8 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     id: 'hitbox', name: 'Hitbox', category: 'Gameplay', icon: 'svg:boundingBox', description: 'Crosshair-center reach + per-entity DDA occlusion', defaultEnabled: false,
     settings: [
       { id: 'fpsMode', type: 'dropdown', label: 'FPS mode', options: [{ value: 'unlimited', label: 'Unlimited' }, { value: 'high', label: 'High (60)' }, { value: 'normal', label: 'Normal (30)' }, { value: 'low', label: 'Light (15)' }], default: 'unlimited' },
-      { id: 'ddaOcclusion', type: 'toggle', label: 'DDA occlusion (render)', default: true },
+      // v32.5: ddaOcclusion removed — DDA occlusion is now always enforced
+      // so hitboxes never show through walls (no ESP).
       { id: 'smoothPositions', type: 'toggle', label: 'Smooth positions (lerpPosTo)', default: true },
       { id: 'showPlayers', type: 'toggle', label: 'Players', default: true },
       { id: 'showMobs', type: 'toggle', label: 'Mobs', default: false },
