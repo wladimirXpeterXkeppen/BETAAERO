@@ -2544,7 +2544,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       }
       const _c = [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }];
       const OFFS = [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1], [-1, 1, -1], [1, 1, -1], [1, 1, 1], [-1, 1, 1]];
-      function drawBox(p, half, isReach, nc, rc, borderHex, mode, lw, showV, glow) {
+          function drawBox(p, half, isReach, nc, rc, borderHex, mode, lw, showV, glow, reachBorder) {
         const ctx = st._ctx;
         const corners = [];
         for (let i = 0; i < 8; i++) {
@@ -2556,7 +2556,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           if (!pr) return;
           corners.push(pr);
         }
-        const bc = isReach ? rc : borderHex;
+        // v32.5: reachBorder lets the target's border be fully opaque
+        // while its fill stays semi-transparent.
+        const bc = isReach ? (reachBorder || rc) : borderHex;
         const bw = isReach ? (lw + 1) : lw;
         ctx.shadowColor = 'transparent';
         ctx.shadowBlur = 0;
