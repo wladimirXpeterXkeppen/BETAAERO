@@ -2399,10 +2399,25 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       document.addEventListener('visibilitychange', st._onVis);
       st._raf = 0; st._running = false;
       let lastCheck = 0;
-      const loop = () => {
+          const loop = () => {
         if (!Mods.on('crosshair')) { st._raf = 0; st._running = false; return; }
         st._raf = requestAnimationFrame(loop);
+
+        // v32.5: visibility gate (GUI / editor overlay, pointer lock)
+        const editing = document.body.classList.contains('ac-editing');
+        const s0 = st._cfg || {};
+        let hide = false;
+        if (!editing) {
+          if (s0.hideInMenus !== false &&
+              (document.querySelector('.ac-overlay') || document.getElementById('ac-editor'))) hide = true;
+          if (!hide && s0.hideWhenUnlocked && !document.pointerLockElement) hide = true;
+        }
+        if (hide) {
+          if (cv.style.display !== 'none') cv.style.display = 'none';
+          return;
+        }
         cv.style.display = 'block';
+
         applySmooth();
         const s = st._cfg;
         const now = performance.now();
