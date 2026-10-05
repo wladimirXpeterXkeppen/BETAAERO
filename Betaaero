@@ -2668,7 +2668,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         const pc = hexA(s.playerColor || '#00ff88', (s.playerFillAlpha || 25) / 100);
         const rc = hexA(s.reachColor || '#ff5577', (s.reachFillAlpha || 45) / 100);
         const selfId = me.sessionId || me.id;
-        const useOccl = s.ddaOcclusion !== false;
+        // v32.5: DDA occlusion is always enforced. Even if a legacy config
+        // still has ddaOcclusion=false, we ignore it to prevent ESP.
+        const useOccl = true;
         function getE(e) {
           try { const lp = e && e.physicsPosComp && e.physicsPosComp.lerpPosTo; if (lp && typeof lp.x === 'number') return lp; } catch (_) {}
           return Game.pos(e);
