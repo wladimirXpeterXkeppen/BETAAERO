@@ -2625,7 +2625,36 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         if (!cam) return;
         try { if (cam.matrixWorldInverse && cam.matrixWorldInverse.copy) cam.matrixWorldInverse.copy(cam.matrixWorld).invert(); } catch (_) {}
         st._matInv = cam.matrixWorldInverse ? cam.matrixWorldInverse.elements : null;
-        st._matProj = cam.projectionMatrix ? cam.projectionMatrix.elements : null;
+        // v32.5: The Zoom MOD patches the GPU-side projection through a
+        // uniformMatrix4fv interceptor, but does NOT touch the camera's own
+        // projectionMatrix object. To keep the projected boxes aligned with
+        // the rendered scene while zooming, we must apply the same 1/zoom
+        // factor to pj[0] and pj[5]. We copy into a scratch buffer so we
+        // never mutate the camera's real matrix.
+        const rawProj = cam.projectionMatrix ? cam.projectionMatrix.elements : null;
+        if (rawProj) {
+          let zScale = 1;
+          try {
+            const zMod = Mods.get('zoom');
+            if (zMod && Mods.on('zoom') && typeof zMod._getScale === 'function') {
+              zScale = zMod._getScale() || 1;
+            }
+          } catch (_) {}
+          if (zScale !== 1) {
+            if (!st._projBuf || st._projBuf.length !== rawProj.length) {
+              st._projBuf = new Float32Array(rawProj.length);
+            }
+            st._projBuf.set(rawProj);
+            const f = 1 / zScale;
+            st._projBuf[0] *= f;
+            st._projBuf[5] *= f;
+            st._matProj = st._projBuf;
+          } else {
+            st._matProj = rawProj;
+          }
+        } else {
+          st._matProj = null;
+        }
         if (!st._matInv || !st._matProj) return;
         const camPos = cam.position;
         if (!camPos) return;
