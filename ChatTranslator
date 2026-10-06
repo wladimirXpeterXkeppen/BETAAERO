@@ -1,0 +1,663 @@
+(function(){
+'use strict';
+
+/* ==================== 設定 ==================== */
+const CONFIG = {
+    inputMode: 'auto',
+    receiveMode: 'auto',
+    inlineEnabled: true,       // チャット内に訳文を追加
+    boardEnabled: true,        // 翻訳ボードを表示
+    showLangTag: true,
+    showOriginalOnBoard: true,
+    skipSystemMessages: true,
+    skipPrefixes: ['/', '!'],
+    logToConsole: true,
+    historyMax: 50,
+    boardOpacity: 0.9,
+    inlineStyle: {
+        borderColor: '#3b82f6',
+        textColor: '#a5d8ff',
+        fontSize: '0.9em'
+    }
+};
+
+const LANGS = [
+    { code: 'auto', name: '自動 (日→英 / 他→日)' },
+    { code: 'en',   name: 'English' },
+    { code: 'ja',   name: '日本語' },
+    { code: 'zh',   name: '中文 (简体)' },
+    { code: 'zh-tw',name: '中文 (繁體)' },
+    { code: 'ko',   name: '한국어' },
+    { code: 'es',   name: 'Español' },
+    { code: 'fr',   name: 'Français' },
+    { code: 'de',   name: 'Deutsch' },
+    { code: 'pt',   name: 'Português' },
+    { code: 'it',   name: 'Italiano' },
+    { code: 'ru',   name: 'Русский' },
+    { code: 'ar',   name: 'العربية' },
+    { code: 'hi',   name: 'हिन्दी' },
+    { code: 'th',   name: 'ไทย' },
+    { code: 'vi',   name: 'Tiếng Việt' },
+    { code: 'id',   name: 'Bahasa Indonesia' },
+    { code: 'tr',   name: 'Türkçe' },
+    { code: 'nl',   name: 'Nederlands' },
+    { code: 'pl',   name: 'Polski' },
+    { code: 'sv',   name: 'Svenska' },
+    { code: 'uk',   name: 'Українська' },
+];
+
+const LANG_SHORT = {'ja':'JA','en':'EN','zh':'ZH','zh-tw':'ZH-TW','ko':'KO','es':'ES','fr':'FR','de':'DE','ru':'RU','pt':'PT','it':'IT','ar':'AR','hi':'HI','th':'TH','vi':'VI','id':'ID','tr':'TR','nl':'NL','pl':'PL','sv':'SV','uk':'UK'};
+const LANG_NATIVE = {'ja':'日本語','en':'English','zh':'中文','zh-tw':'中文(繁)','ko':'한국어','es':'Español','fr':'Français','de':'Deutsch','ru':'Русский','pt':'Português','it':'Italiano','vi':'Tiếng Việt','th':'ไทย','tr':'Türkçe','ar':'العربية','hi':'हिन्दी','id':'Bahasa Indonesia','nl':'Nederlands','pl':'Polski','sv':'Svenska','uk':'Українська'};
+
+/* ==================== 永続化 ==================== */
+const STORAGE_KEY = 'minefun-hybrid-config';
+try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+        const parsed = JSON.parse(saved);
+        Object.assign(CONFIG, parsed);
+        if (parsed.inlineStyle) Object.assign(CONFIG.inlineStyle, parsed.inlineStyle);
+    }
+} catch(e) {}
+function saveConfig() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(CONFIG)); } catch(e) {}
+}
+function log(...a) { if (CONFIG.logToConsole) console.log('[MineFun]', ...a); }
+
+/* ==================== 翻訳API（キャッシュ付き） ==================== */
+const transCache = new Map();      // key: text|lang → {text, src}
+const inFlight = new Map();        // key: text|lang → Promise
+
+async function translateText(text, tl) {
+    const key = text + '|' + tl;
+    if (transCache.has(key)) return transCache.get(key);
+    if (inFlight.has(key)) return inFlight.get(key);
+
+    const p = (async () => {
+        const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${tl}&dt=t&q=${encodeURIComponent(text)}`;
+        const r = await fetch(url);
+        const d = await r.json();
+        const out = { text: d[0].map(x => x[0]).filter(Boolean).join(''), src: d[2] || 'unknown' };
+        transCache.set(key, out);
+        if (transCache.size > 800) transCache.delete(transCache.keys().next().value);
+        return out;
+    })().finally(() => inFlight.delete(key));
+
+    inFlight.set(key, p);
+    return p;
+}
+
+function pickTarget(text, mode) {
+    if (mode !== 'auto') return mode;
+    const hasJa = /[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]/.test(text);
+    return hasJa ? 'en' : 'ja';
+}
+function detectLangLocal(text) {
+    if (/[\u3040-\u309f\u30a0-\u30ff]/.test(text)) return 'ja';
+    if (/[\u4e00-\u9faf]/.test(text)) return 'zh';
+    if (/[\uac00-\ud7af]/.test(text)) return 'ko';
+    if (/[\u0400-\u04ff]/.test(text)) return 'ru';
+    if (/[\u0600-\u06ff]/.test(text)) return 'ar';
+    if (/[\u0e00-\u0e7f]/.test(text)) return 'th';
+    if (/[\u0900-\u097f]/.test(text)) return 'hi';
+    return 'en';
+}
+function langName(c) { return LANG_NATIVE[c] || c; }
+
+/* ==================== システムメッセージ判定 ==================== */
+const SYS_RE = new RegExp([
+    'joined the game','left the game','has joined','has left',
+    'logged in','logged out','connected','disconnected',
+    '退出しました','参加しました','入室しました','退室しました',
+    'ログインしました','ログアウトしました',
+    'が退出','が参加','が入室','が退室','が入りました','が出ました',
+    'ゲームに参加','ゲームから退出',
+    '加入了游戏','离开了游戏','已加入','已退出','已离开',
+    '加入游戏','离开游戏','进入游戏','退出游戏',
+    '참가했습니다','퇴장했습니다','입장했습니다',
+].join('|'), 'i');
+
+function isSystemMessage(sender, text, full) {
+    if (!CONFIG.skipSystemMessages) return false;
+    if (!sender) return true;
+    if (SYS_RE.test(text) || SYS_RE.test(full)) return true;
+    return false;
+}
+
+/* ==================== チャット入力フック（送信翻訳） ==================== */
+const ST = { IDLE: 0, CAPTURED: 1, SENDING: 2 };
+let inputState = ST.IDLE;
+
+function findChatInput() {
+    const sels = ['input.input.active-input','input.input','input[placeholder="入力..."]','textarea'];
+    for (const s of sels) {
+        for (const el of document.querySelectorAll(s)) {
+            if (el.offsetParent !== null || el === document.activeElement) return el;
+        }
+    }
+    return null;
+}
+
+window.addEventListener('keydown', async (e) => {
+    if (e.key !== 'Enter') return;
+    if (e.isComposing || e.keyCode === 229) return;
+    const input = findChatInput();
+    if (!input || e.target !== input) return;
+    if (inputState !== ST.IDLE) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+
+    const original = (input.value || '').trim();
+    if (!original) return;
+    if (CONFIG.skipPrefixes.some(p => original.startsWith(p))) return;
+
+    e.preventDefault(); e.stopImmediatePropagation();
+    inputState = ST.CAPTURED;
+    log('送信翻訳中:', original);
+
+    let translated = original;
+    try {
+        const tl = pickTarget(original, CONFIG.inputMode);
+        const r = await translateText(original, tl);
+        translated = r.text.replace(/\n+/g, ' ').trim();
+        log('送信翻訳結果:', translated, '(→', tl + ')');
+    } catch(err) { console.error('[MineFun] 送信翻訳失敗:', err); }
+    if (!translated) translated = original;
+
+    input.value = translated;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    inputState = ST.SENDING;
+    const opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+    input.dispatchEvent(new KeyboardEvent('keydown', opts));
+    input.dispatchEvent(new KeyboardEvent('keyup', opts));
+    setTimeout(() => { inputState = ST.IDLE; }, 200);
+}, true);
+
+window.addEventListener('keyup', (e) => {
+    if (e.key !== 'Enter') return;
+    if (e.isComposing || e.keyCode === 229) return;
+    const input = findChatInput();
+    if (!input || e.target !== input) return;
+    if (inputState === ST.CAPTURED) { e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
+
+/* ==================== 受信メッセージ処理 ==================== */
+let messageDataAttribute = null;
+let observer = null;
+
+function detectMessageAttribute() {
+    try {
+        const css = [...document.styleSheets].find(x => x?.href && x?.href.includes('assets/Game-'));
+        if (!css) return false;
+        const rules = [...css.cssRules];
+        const m = rules.find(x => x?.selectorText && x?.selectorText.includes('.messages[data-v-'));
+        if (!m) return false;
+        const r = m.selectorText.match(/\.messages\[(data-v-[^\]]+)\]/);
+        if (!r) return false;
+        if (r[1] !== messageDataAttribute) {
+            messageDataAttribute = r[1];
+            log('メッセージ属性検出:', messageDataAttribute);
+            startObserver();
+        }
+        return true;
+    } catch(e) { return false; }
+}
+
+// 我々が追加した子要素を除外したオリジナルテキストを取得
+function extractOriginalText(el) {
+    if (el.dataset.minefunOrig) return el.dataset.minefunOrig;
+    const clone = el.cloneNode(true);
+    clone.querySelectorAll('.minefun-inline-translation').forEach(n => n.remove());
+    return String(clone.innerText || clone.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+function parseMessage(el) {
+    if (!el) return null;
+    const full = extractOriginalText(el);
+    if (!full) return null;
+    const colonIdx = full.indexOf(':');
+    let sender = '', text = full;
+    if (colonIdx >= 0 && colonIdx < 30) {
+        sender = full.slice(0, colonIdx).replace(/^[⭐★\s]+/, '').trim();
+        text = full.slice(colonIdx + 1).trim();
+    }
+    let hasRole = false;
+    el.querySelectorAll('img').forEach(img => {
+        const src = img.src || '';
+        if (/Verify|Youtuber|Mod|Vanguard|Streamer/i.test(src) || img.classList.contains('icon-img')) hasRole = true;
+    });
+    return { sender, text, full, hasRole, el };
+}
+
+function isBadMessage(text) {
+    if (text.length > 300) return true;
+    if ((text.match(/\n/g) || []).length >= 3) return true;
+    if (/(^|\n)[^\s:]{2,20}[ \t]*:[^\n]{1,200}\n[^\s:]{2,20}[ \t]*:/.test(text)) return true;
+    return false;
+}
+
+// ★ インライン訳を子要素として追加（Vueと競合しない）
+function ensureInline(el, translated, srcLang) {
+    // 既存を削除
+    el.querySelectorAll('.minefun-inline-translation').forEach(n => n.remove());
+    if (!CONFIG.inlineEnabled || !translated) return;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'minefun-inline-translation';
+    wrap.style.cssText = `
+        margin-top:3px;
+        padding:2px 0 0 8px;
+        border-left:2px solid ${CONFIG.inlineStyle.borderColor};
+        color:${CONFIG.inlineStyle.textColor};
+        font-size:${CONFIG.inlineStyle.fontSize};
+        line-height:1.35;
+        opacity:0.92;
+        pointer-events:none;
+    `;
+    const tag = CONFIG.showLangTag && srcLang
+        ? `<span style="display:inline-block;margin-right:5px;padding:0 4px;background:rgba(59,130,246,0.18);border:1px solid rgba(59,130,246,0.35);border-radius:3px;font-size:0.78em;font-weight:700;letter-spacing:0.4px;color:${CONFIG.inlineStyle.borderColor};vertical-align:middle;">${LANG_SHORT[srcLang] || srcLang.toUpperCase().slice(0,2)}</span>`
+        : '';
+    wrap.innerHTML = tag + escapeHtml(translated);
+    el.appendChild(wrap);
+}
+
+async function processMessage(el) {
+    if (!el || el.nodeType !== 1) return;
+    if (el.dataset.minefunDone === 'true') {
+        // 処理済みでも、Vueの再描画でinlineが消えていたら復元
+        if (CONFIG.inlineEnabled && !el.querySelector('.minefun-inline-translation') && el.dataset.minefunTrans) {
+            ensureInline(el, el.dataset.minefunTrans, el.dataset.minefunSrc);
+        }
+        return;
+    }
+
+    const p = parseMessage(el);
+    if (!p) return;
+    if (isBadMessage(p.text)) { el.dataset.minefunDone = 'true'; return; }
+    if (isSystemMessage(p.sender, p.text, p.full)) {
+        el.dataset.minefunDone = 'true';
+        return;
+    }
+
+    el.dataset.minefunOrig = p.text;
+
+    const targetLang = pickTarget(p.text, CONFIG.receiveMode);
+    const detected = detectLangLocal(p.text);
+    const sender = (p.hasRole ? '⭐' : '') + p.sender;
+
+    if (detected === targetLang) {
+        el.dataset.minefunDone = 'true';
+        if (CONFIG.boardEnabled) addToBoard(sender, p.text, p.text, langName(detected), true);
+        return;
+    }
+
+    el.dataset.minefunDone = 'processing';
+
+    try {
+        const r = await translateText(p.text, targetLang);
+        if (!r.text || !r.text.trim()) { el.dataset.minefunDone = 'true'; return; }
+
+        el.dataset.minefunTrans = r.text;
+        el.dataset.minefunSrc = r.src;
+        el.dataset.minefunDone = 'true';
+
+        ensureInline(el, r.text, r.src);
+        if (CONFIG.boardEnabled) addToBoard(sender, p.text, r.text, langName(r.src), r.src === targetLang);
+    } catch(err) {
+        el.dataset.minefunDone = 'true';
+        console.error('[MineFun] 受信翻訳失敗:', err);
+    }
+}
+
+function startObserver() {
+    if (observer) observer.disconnect();
+    if (!document.body) { setTimeout(startObserver, 500); return; }
+
+    observer = new MutationObserver((mutations) => {
+        mutations.forEach(m => {
+            m.addedNodes.forEach(node => {
+                if (node.nodeType !== 1 || !messageDataAttribute) return;
+                if (node.hasAttribute && node.hasAttribute(messageDataAttribute)) processMessage(node);
+                if (node.querySelectorAll) {
+                    node.querySelectorAll(`.messages[${messageDataAttribute}]`).forEach(processMessage);
+                }
+            });
+        });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    log('Observer開始');
+
+    document.querySelectorAll(`.messages[${messageDataAttribute}]`).forEach(processMessage);
+}
+
+/* ==================== 翻訳ボード ==================== */
+const boardData = [];
+
+function addToBoard(sender, original, translated, langNameStr, isSameLang) {
+    boardData.push({ sender, original, translated, langName: langNameStr, isSameLang, time: Date.now() });
+    while (boardData.length > CONFIG.historyMax) boardData.shift();
+    renderBoardItem(boardData[boardData.length - 1]);
+}
+
+function escapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function buildItemHTML(item) {
+    const senderHTML = item.sender ? `<div style="color:#7ec8e3;font-size:11px;font-weight:bold;margin-bottom:3px;">${escapeHtml(item.sender)}</div>` : '';
+    const langTag = (CONFIG.showLangTag && item.langName) ? `<span style="color:#aaa;font-size:10px;">[${escapeHtml(item.langName)}]</span> ` : '';
+    if (item.isSameLang) return senderHTML + `<div style="color:#ccc;font-size:12px;">${langTag}${escapeHtml(item.original)}</div>`;
+    const origHTML = CONFIG.showOriginalOnBoard ? `<div style="color:#888;font-size:11px;margin-bottom:2px;">${escapeHtml(item.original)}</div>` : '';
+    return senderHTML + origHTML + `<div style="color:#fff;font-size:12px;">${langTag}${escapeHtml(item.translated)}</div>`;
+}
+
+function renderBoardItem(item) {
+    const list = document.getElementById('minefun-board-list');
+    if (!list) return;
+    const div = document.createElement('div');
+    div.style.cssText = 'border-bottom:1px solid #2a2a2a;padding:6px;';
+    div.innerHTML = buildItemHTML(item);
+    list.appendChild(div);
+    while (list.children.length > CONFIG.historyMax) list.removeChild(list.firstChild);
+    list.scrollTop = list.scrollHeight;
+}
+
+function renderBoardAll() {
+    const list = document.getElementById('minefun-board-list');
+    if (!list) return;
+    list.innerHTML = '';
+    boardData.forEach(item => {
+        const div = document.createElement('div');
+        div.style.cssText = 'border-bottom:1px solid #2a2a2a;padding:6px;';
+        div.innerHTML = buildItemHTML(item);
+        list.appendChild(div);
+    });
+    list.scrollTop = list.scrollHeight;
+}
+
+// 受信モード変更時に、ボードとインラインを再翻訳
+async function retranslateAll() {
+    log('再翻訳中...');
+    // ボード
+    const items = boardData.slice();
+    boardData.length = 0;
+    const list = document.getElementById('minefun-board-list');
+    if (list) list.innerHTML = '';
+
+    // インライン
+    const msgNodes = messageDataAttribute
+        ? [...document.querySelectorAll(`.messages[${messageDataAttribute}]`)]
+        : [];
+
+    // メッセージごとに再処理
+    for (const el of msgNodes) {
+        const p = parseMessage(el);
+        if (!p || !p.text) continue;
+        if (isSystemMessage(p.sender, p.text, p.full)) continue;
+
+        const targetLang = pickTarget(p.text, CONFIG.receiveMode);
+        const detected = detectLangLocal(p.text);
+        const sender = (p.hasRole ? '⭐' : '') + p.sender;
+
+        if (detected === targetLang) {
+            el.querySelectorAll('.minefun-inline-translation').forEach(n => n.remove());
+            el.dataset.minefunDone = 'true';
+            continue;
+        }
+        try {
+            const r = await translateText(p.text, targetLang);
+            if (r.text && r.text.trim()) {
+                el.dataset.minefunTrans = r.text;
+                el.dataset.minefunSrc = r.src;
+                el.dataset.minefunDone = 'true';
+                ensureInline(el, r.text, r.src);
+            }
+        } catch(e) {}
+    }
+
+    // ボード再構築
+    for (const el of msgNodes) {
+        if (!el.dataset.minefunTrans) continue;
+        const p = parseMessage(el);
+        if (!p) continue;
+        const sender = (p.hasRole ? '⭐' : '') + p.sender;
+        const detected = detectLangLocal(p.text);
+        const targetLang = pickTarget(p.text, CONFIG.receiveMode);
+        addToBoard(sender, p.text, el.dataset.minefunTrans, langName(el.dataset.minefunSrc), detected === targetLang);
+    }
+    log('再翻訳完了');
+}
+
+/* ==================== UI：設定パネル ==================== */
+function createSettingsPanel() {
+    if (document.getElementById('minefun-hybrid-panel')) return;
+
+    const panel = document.createElement('div');
+    panel.id = 'minefun-hybrid-panel';
+    panel.style.cssText = `position:fixed;top:10px;right:10px;background:rgba(0,0,0,0.9);color:#fff;border:1px solid #555;border-radius:6px;padding:10px 12px;font-family:system-ui,sans-serif;font-size:12px;z-index:999999;min-width:230px;box-shadow:0 2px 10px rgba(0,0,0,0.6);`;
+
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;cursor:move;';
+    header.innerHTML = `<span style="font-weight:bold;">🌐 翻訳設定</span>`;
+    const toggleBtn = document.createElement('button');
+    toggleBtn.textContent = '−';
+    toggleBtn.style.cssText = 'background:none;border:none;color:#aaa;cursor:pointer;font-size:14px;padding:0 2px;';
+    header.appendChild(toggleBtn);
+    panel.appendChild(header);
+
+    const body = document.createElement('div');
+    body.id = 'minefun-hybrid-body';
+
+    // 送信
+    body.innerHTML += `<div style="font-size:11px;color:#aaa;margin-bottom:3px;">✏️ 送信の翻訳先</div>`;
+    const inputSel = document.createElement('select');
+    inputSel.id = 'minefun-input-lang';
+    inputSel.style.cssText = 'width:100%;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:4px;font-size:12px;box-sizing:border-box;';
+    LANGS.forEach(l => {
+        const o = document.createElement('option'); o.value = l.code; o.textContent = l.name;
+        if (l.code === CONFIG.inputMode) o.selected = true;
+        inputSel.appendChild(o);
+    });
+    inputSel.addEventListener('change', () => { CONFIG.inputMode = inputSel.value; saveConfig(); log('送信:', CONFIG.inputMode); });
+    body.appendChild(inputSel);
+
+    // 受信
+    body.innerHTML += `<div style="font-size:11px;color:#aaa;margin:8px 0 3px;">📋 受信の翻訳先</div>`;
+    const recvSel = document.createElement('select');
+    recvSel.id = 'minefun-receive-lang';
+    recvSel.style.cssText = 'width:100%;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:4px;font-size:12px;box-sizing:border-box;';
+    LANGS.forEach(l => {
+        const o = document.createElement('option'); o.value = l.code; o.textContent = l.name;
+        if (l.code === CONFIG.receiveMode) o.selected = true;
+        recvSel.appendChild(o);
+    });
+    recvSel.addEventListener('change', async () => {
+        CONFIG.receiveMode = recvSel.value;
+        saveConfig();
+        log('受信:', CONFIG.receiveMode);
+        await retranslateAll();
+    });
+    body.appendChild(recvSel);
+
+    // トグル
+    const toggleWrap = document.createElement('div');
+    toggleWrap.style.cssText = 'margin-top:8px;padding-top:8px;border-top:1px solid #333;display:flex;flex-direction:column;gap:5px;';
+
+    const mkChk = (id, checked, label, onChange) => {
+        const lab = document.createElement('label');
+        lab.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11px;color:#ccc;';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.checked = checked; cb.id = id;
+        cb.addEventListener('change', () => { onChange(cb.checked); saveConfig(); });
+        lab.appendChild(cb);
+        lab.appendChild(document.createTextNode(label));
+        return lab;
+    };
+
+    toggleWrap.appendChild(mkChk('minefun-inline-chk', CONFIG.inlineEnabled, 'チャット内に訳文を表示',
+        v => { CONFIG.inlineEnabled = v; retranslateAll(); }));
+
+    toggleWrap.appendChild(mkChk('minefun-board-chk', CONFIG.boardEnabled, '翻訳ボードを表示',
+        v => {
+            CONFIG.boardEnabled = v;
+            const bp = document.getElementById('minefun-board-panel');
+            if (bp) bp.style.display = v ? 'flex' : 'none';
+        }));
+
+    toggleWrap.appendChild(mkChk('minefun-tag-chk', CONFIG.showLangTag, '言語タグを表示',
+        v => { CONFIG.showLangTag = v; retranslateAll(); }));
+
+    toggleWrap.appendChild(mkChk('minefun-orig-chk', CONFIG.showOriginalOnBoard, 'ボードに原文も表示',
+        v => { CONFIG.showOriginalOnBoard = v; renderBoardAll(); }));
+
+    body.appendChild(toggleWrap);
+
+    const hint = document.createElement('div');
+    hint.style.cssText = 'margin-top:8px;font-size:10px;color:#888;line-height:1.4;border-top:1px solid #333;padding-top:5px;';
+    hint.innerHTML = 'Alt+←/→ : 送信言語<br>Shift+Alt+←/→ : 受信言語<br>Alt+0 : 自動モード';
+    body.appendChild(hint);
+
+    panel.appendChild(body);
+    document.body.appendChild(panel);
+
+    toggleBtn.addEventListener('click', () => {
+        const hidden = body.style.display === 'none';
+        body.style.display = hidden ? 'block' : 'none';
+        toggleBtn.textContent = hidden ? '−' : '+';
+    });
+
+    let drag = false, dx = 0, dy = 0;
+    header.addEventListener('mousedown', (e) => {
+        if (e.target === toggleBtn) return;
+        drag = true;
+        const r = panel.getBoundingClientRect();
+        dx = e.clientX - r.left; dy = e.clientY - r.top;
+        panel.style.right = 'auto';
+        panel.style.left = r.left + 'px'; panel.style.top = r.top + 'px';
+        e.preventDefault();
+    });
+    document.addEventListener('mousemove', e => {
+        if (!drag) return;
+        panel.style.left = (e.clientX - dx) + 'px';
+        panel.style.top = (e.clientY - dy) + 'px';
+    });
+    document.addEventListener('mouseup', () => { drag = false; });
+}
+
+/* ==================== UI：翻訳ボード ==================== */
+function createBoardPanel() {
+    if (document.getElementById('minefun-board-panel')) return;
+
+    const panel = document.createElement('div');
+    panel.id = 'minefun-board-panel';
+    panel.style.cssText = `position:fixed;left:10px;bottom:10px;width:280px;height:280px;min-width:180px;min-height:120px;background:rgba(0,0,0,${CONFIG.boardOpacity});color:#fff;border:1px solid #555;border-radius:6px;z-index:999998;display:${CONFIG.boardEnabled ? 'flex' : 'none'};flex-direction:column;font-family:system-ui,sans-serif;font-size:12px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,0.6);`;
+
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:rgba(255,255,255,0.08);cursor:move;border-bottom:1px solid #444;flex-shrink:0;';
+    header.innerHTML = `<span style="font-weight:bold;">📋 翻訳ボード</span>`;
+    const btnWrap = document.createElement('div');
+    btnWrap.style.cssText = 'display:flex;gap:6px;align-items:center;';
+    const clearBtn = document.createElement('button');
+    clearBtn.textContent = 'クリア';
+    clearBtn.style.cssText = 'background:#555;color:#fff;border:none;padding:2px 7px;border-radius:3px;cursor:pointer;font-size:11px;';
+    clearBtn.addEventListener('click', () => {
+        boardData.length = 0;
+        const l = document.getElementById('minefun-board-list');
+        if (l) l.innerHTML = '';
+    });
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '×';
+    closeBtn.style.cssText = 'background:none;border:none;color:#aaa;cursor:pointer;font-size:16px;line-height:1;padding:0 2px;';
+    closeBtn.addEventListener('click', () => {
+        panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
+    });
+    btnWrap.appendChild(clearBtn);
+    btnWrap.appendChild(closeBtn);
+    header.appendChild(btnWrap);
+    panel.appendChild(header);
+
+    const list = document.createElement('div');
+    list.id = 'minefun-board-list';
+    list.style.cssText = 'flex:1;overflow-y:auto;padding:2px 4px;';
+    panel.appendChild(list);
+
+    const rh = document.createElement('div');
+    rh.style.cssText = 'position:absolute;right:0;bottom:0;width:14px;height:14px;cursor:se-resize;background:linear-gradient(135deg,transparent 50%,#888 50%);';
+    panel.appendChild(rh);
+    rh.addEventListener('mousedown', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const sw = panel.offsetWidth, sh = panel.offsetHeight, sx = e.clientX, sy = e.clientY;
+        const mm = (ev) => {
+            panel.style.width = Math.max(180, sw + ev.clientX - sx) + 'px';
+            panel.style.height = Math.max(120, sh + ev.clientY - sy) + 'px';
+        };
+        const mu = () => { document.removeEventListener('mousemove', mm); document.removeEventListener('mouseup', mu); };
+        document.addEventListener('mousemove', mm); document.addEventListener('mouseup', mu);
+    });
+
+    let drag = false, dx = 0, dy = 0;
+    header.addEventListener('mousedown', (e) => {
+        if (e.target.tagName === 'BUTTON') return;
+        drag = true;
+        const r = panel.getBoundingClientRect();
+        dx = e.clientX - r.left; dy = e.clientY - r.top;
+        panel.style.left = r.left + 'px'; panel.style.top = r.top + 'px';
+        panel.style.right = 'auto'; panel.style.bottom = 'auto';
+        e.preventDefault();
+    });
+    document.addEventListener('mousemove', e => {
+        if (!drag) return;
+        panel.style.left = (e.clientX - dx) + 'px';
+        panel.style.top = (e.clientY - dy) + 'px';
+    });
+    document.addEventListener('mouseup', () => { drag = false; });
+
+    document.body.appendChild(panel);
+    renderBoardAll();
+}
+
+/* ==================== ショートカット ==================== */
+window.addEventListener('keydown', (e) => {
+    if (!e.altKey) return;
+    if (document.activeElement?.tagName === 'INPUT') return;
+    const isRecv = e.shiftKey;
+    const cur = isRecv ? CONFIG.receiveMode : CONFIG.inputMode;
+    const idx = LANGS.findIndex(l => l.code === cur);
+    let nm = null;
+    if (e.key === 'ArrowRight') nm = LANGS[(idx + 1) % LANGS.length].code;
+    else if (e.key === 'ArrowLeft') nm = LANGS[(idx - 1 + LANGS.length) % LANGS.length].code;
+    else if (e.key === '0') nm = 'auto';
+    else return;
+    e.preventDefault();
+
+    if (isRecv) {
+        CONFIG.receiveMode = nm; saveConfig();
+        const s = document.getElementById('minefun-receive-lang'); if (s) s.value = nm;
+        log('受信:', nm);
+        retranslateAll();
+    } else {
+        CONFIG.inputMode = nm; saveConfig();
+        const s = document.getElementById('minefun-input-lang'); if (s) s.value = nm;
+        log('送信:', nm);
+    }
+});
+
+/* ==================== 初期化 ==================== */
+function init() {
+    createSettingsPanel();
+    createBoardPanel();
+    if (!detectMessageAttribute()) {
+        const t = setInterval(() => { if (detectMessageAttribute()) clearInterval(t); }, 500);
+        setTimeout(() => clearInterval(t), 30000);
+    }
+    setInterval(detectMessageAttribute, 5000);
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+} else {
+    init();
+}
+
+console.log('[MineFun] 🎉 ハイブリッド版起動');
+console.log('[MineFun] 送信:', CONFIG.inputMode, '| 受信:', CONFIG.receiveMode);
+console.log('[MineFun] インライン訳:', CONFIG.inlineEnabled, '| ボード:', CONFIG.boardEnabled);
+console.log('[MineFun] 元に戻すにはページリロード');
+})();
