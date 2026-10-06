@@ -7378,14 +7378,30 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
   if (document.body) StatsInline.start();
   else document.addEventListener('DOMContentLoaded', () => StatsInline.start(), { once: true });
 
-  setTimeout(async () => {
+  // v32.5: wait for the MineFun game world to be available before loading
+  // plugins. Plugins often touch Game.world() / DOM in init(), and the
+  // previous 50ms delay was too short on slow machines, causing
+  // intermittent "plugin didn't load" symptoms.
+  function waitForWorldReady(maxMs) {
+    return new Promise(resolve => {
+      const t0 = performance.now();
+      const check = () => {
+        if (Game.world() || performance.now() - t0 > maxMs) return resolve();
+        setTimeout(check, 150);
+      };
+      check();
+    });
+  }
+
+  (async () => {
     try {
+      await new Promise(r => setTimeout(r, 200));
+      await waitForWorldReady(15000);
       const rs = await Plugins.runAll();
       rs.forEach(r => { if (!r.ok) console.warn('[Plugin] load failed:', r.id, r.error); });
       if (rs.length) console.log('[AeroClient] Plugins loaded:', rs.length);
     } catch (e) { console.warn('[Plugin] boot error', e); }
-  }, 50);
-
+  })();
   const MAX_HOLD = 350;
   let modCode = null, modDownAt = 0, comboUsed = false;
   const MODS_SET = new Set(['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight']);
