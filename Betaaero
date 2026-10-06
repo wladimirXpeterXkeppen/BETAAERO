@@ -289,7 +289,7 @@
         HUD.list().forEach(e => { if (e.modId === id) HUD.sync(e.id); });
       },
       applyAll() { O.forEach(id => Mods.apply(id)); },
-      bootMod(m) {
+          bootMod(m) {
         const st = Config.get('mods.' + m.id) || {};
         (m.settings || []).forEach(s => {
           if (st[s.id] === undefined && s.default !== undefined) { st[s.id] = clone(s.default); }
@@ -303,11 +303,48 @@
         });
         if (st.__enabled === undefined) st.__enabled = m.defaultEnabled !== false;
         Config.set('mods.' + m.id, st);
+        // v32.5: only mark as booted if init() actually succeeds.
+        // If init throws (e.g. game world not ready yet), leave _r=false
+        // so the retry loop in boot() can try again later.
+        try {
+          m.init && m.init.call(m, st);
+        } catch (e) {
+          m._retryCount = (m._retryCount || 0) + 1;
+          if (m._retryCount >= 20) {
+            // ~30s of failed retries: give up and mark as booted to stop spam.
+            console.warn('[AC]', m.id, 'init failed 20 times, giving up:', e);
+            m._r = true;
+          } else {
+            console.warn('[AC]', m.id, 'init failed, will retry:', e);
+          }
+          return;
+        }
+        m._retryCount = 0;
         m._r = true;
-        try { m.init && m.init.call(m, st); } catch (e) { console.warn('[AC]', m.id, e); }
-        Mods.apply(m.id);
+        try { Mods.apply(m.id); } catch (e) { console.warn('[AC]', m.id, 'apply failed:', e); }
       },
-      boot() { O.slice().forEach(id => { const m = R.get(id); if (m && !m._r) Mods.bootMod(m); }); },
+      boot() {
+        O.slice().forEach(id => { const m = R.get(id); if (m && !m._r) Mods.bootMod(m); });
+        // v32.5: retry loop for mods whose init failed on the first pass.
+        // Runs every 1.5s until every registered mod has booted or 20 tries.
+        if (!Mods._bootRetryId) {
+          Mods._bootRetryId = setInterval(() => {
+            let pending = 0;
+            O.slice().forEach(id => {
+              const m = R.get(id);
+              if (m && !m._r) {
+                pending++;
+                try { Mods.bootMod(m); } catch (_) {}
+              }
+            });
+            if (pending === 0) {
+              clearInterval(Mods._bootRetryId);
+              Mods._bootRetryId = null;
+              console.log('[AC] all mods booted successfully');
+            }
+          }, 1500);
+        }
+      },
       killAll() { O.forEach(id => { const m = R.get(id); try { m.destroy && m.destroy.call(m); } catch (e) {} }); }
     };
   })();
