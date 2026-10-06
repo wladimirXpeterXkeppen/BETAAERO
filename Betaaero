@@ -6600,6 +6600,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           else if (s.id === '__editTarget') mm._openEditor('target');
           else if (s.id === '__edit' && mm._toggleEdit) mm._toggleEdit();
           else if (s.id === '__reset' && mm._resetPosition) mm._resetPosition();
+          else if (mm._btnActions && typeof mm._btnActions[s.id] === 'function') mm._btnActions[s.id]();
         };
       }
     });
