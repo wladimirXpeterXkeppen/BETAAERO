@@ -1,12 +1,22 @@
 (function(){
 'use strict';
 
+/* ==================== 自己防御：旧インスタンス無効化 ==================== */
+if (window.__MINEFUN_HYBRID_ACTIVE__) {
+    try {
+        window.__MINEFUN_HYBRID_ACTIVE__.disable();
+        console.log('[MineFun] 旧インスタンスを無効化しました');
+    } catch(e) {}
+}
+const __disabled = { v: false };
+window.__MINEFUN_HYBRID_ACTIVE__ = { disable: () => { __disabled.v = true; } };
+
 /* ==================== 設定 ==================== */
 const CONFIG = {
     inputMode: 'auto',
     receiveMode: 'auto',
-    inlineEnabled: true,       // チャット内に訳文を追加
-    boardEnabled: true,        // 翻訳ボードを表示
+    inlineEnabled: true,
+    boardEnabled: true,
     showLangTag: true,
     showOriginalOnBoard: true,
     skipSystemMessages: true,
@@ -64,9 +74,9 @@ function saveConfig() {
 }
 function log(...a) { if (CONFIG.logToConsole) console.log('[MineFun]', ...a); }
 
-/* ==================== 翻訳API（キャッシュ付き） ==================== */
-const transCache = new Map();      // key: text|lang → {text, src}
-const inFlight = new Map();        // key: text|lang → Promise
+/* ==================== 翻訳API ==================== */
+const transCache = new Map();
+const inFlight = new Map();
 
 async function translateText(text, tl) {
     const key = text + '|' + tl;
@@ -103,6 +113,7 @@ function detectLangLocal(text) {
     return 'en';
 }
 function langName(c) { return LANG_NATIVE[c] || c; }
+function escapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 /* ==================== システムメッセージ判定 ==================== */
 const SYS_RE = new RegExp([
@@ -139,6 +150,7 @@ function findChatInput() {
 }
 
 window.addEventListener('keydown', async (e) => {
+    if (__disabled.v) return;
     if (e.key !== 'Enter') return;
     if (e.isComposing || e.keyCode === 229) return;
     const input = findChatInput();
@@ -173,6 +185,7 @@ window.addEventListener('keydown', async (e) => {
 }, true);
 
 window.addEventListener('keyup', (e) => {
+    if (__disabled.v) return;
     if (e.key !== 'Enter') return;
     if (e.isComposing || e.keyCode === 229) return;
     const input = findChatInput();
@@ -202,7 +215,6 @@ function detectMessageAttribute() {
     } catch(e) { return false; }
 }
 
-// 我々が追加した子要素を除外したオリジナルテキストを取得
 function extractOriginalText(el) {
     if (el.dataset.minefunOrig) return el.dataset.minefunOrig;
     const clone = el.cloneNode(true);
@@ -235,9 +247,7 @@ function isBadMessage(text) {
     return false;
 }
 
-// ★ インライン訳を子要素として追加（Vueと競合しない）
 function ensureInline(el, translated, srcLang) {
-    // 既存を削除
     el.querySelectorAll('.minefun-inline-translation').forEach(n => n.remove());
     if (!CONFIG.inlineEnabled || !translated) return;
 
@@ -262,8 +272,9 @@ function ensureInline(el, translated, srcLang) {
 
 async function processMessage(el) {
     if (!el || el.nodeType !== 1) return;
+
+    // 処理済みでも、Vueの再描画でinlineが消えていたら復元
     if (el.dataset.minefunDone === 'true') {
-        // 処理済みでも、Vueの再描画でinlineが消えていたら復元
         if (CONFIG.inlineEnabled && !el.querySelector('.minefun-inline-translation') && el.dataset.minefunTrans) {
             ensureInline(el, el.dataset.minefunTrans, el.dataset.minefunSrc);
         }
@@ -338,8 +349,6 @@ function addToBoard(sender, original, translated, langNameStr, isSameLang) {
     renderBoardItem(boardData[boardData.length - 1]);
 }
 
-function escapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
 function buildItemHTML(item) {
     const senderHTML = item.sender ? `<div style="color:#7ec8e3;font-size:11px;font-weight:bold;margin-bottom:3px;">${escapeHtml(item.sender)}</div>` : '';
     const langTag = (CONFIG.showLangTag && item.langName) ? `<span style="color:#aaa;font-size:10px;">[${escapeHtml(item.langName)}]</span> ` : '';
@@ -372,21 +381,13 @@ function renderBoardAll() {
     list.scrollTop = list.scrollHeight;
 }
 
-// 受信モード変更時に、ボードとインラインを再翻訳
 async function retranslateAll() {
     log('再翻訳中...');
-    // ボード
-    const items = boardData.slice();
-    boardData.length = 0;
-    const list = document.getElementById('minefun-board-list');
-    if (list) list.innerHTML = '';
-
-    // インライン
     const msgNodes = messageDataAttribute
         ? [...document.querySelectorAll(`.messages[${messageDataAttribute}]`)]
         : [];
 
-    // メッセージごとに再処理
+    // インライン再処理
     for (const el of msgNodes) {
         const p = parseMessage(el);
         if (!p || !p.text) continue;
@@ -394,11 +395,12 @@ async function retranslateAll() {
 
         const targetLang = pickTarget(p.text, CONFIG.receiveMode);
         const detected = detectLangLocal(p.text);
-        const sender = (p.hasRole ? '⭐' : '') + p.sender;
 
         if (detected === targetLang) {
             el.querySelectorAll('.minefun-inline-translation').forEach(n => n.remove());
             el.dataset.minefunDone = 'true';
+            el.dataset.minefunTrans = '';
+            el.dataset.minefunSrc = detected;
             continue;
         }
         try {
@@ -413,14 +415,24 @@ async function retranslateAll() {
     }
 
     // ボード再構築
+    boardData.length = 0;
+    const list = document.getElementById('minefun-board-list');
+    if (list) list.innerHTML = '';
+
     for (const el of msgNodes) {
-        if (!el.dataset.minefunTrans) continue;
         const p = parseMessage(el);
-        if (!p) continue;
+        if (!p || !p.text) continue;
+        if (isSystemMessage(p.sender, p.text, p.full)) continue;
+
         const sender = (p.hasRole ? '⭐' : '') + p.sender;
         const detected = detectLangLocal(p.text);
         const targetLang = pickTarget(p.text, CONFIG.receiveMode);
-        addToBoard(sender, p.text, el.dataset.minefunTrans, langName(el.dataset.minefunSrc), detected === targetLang);
+
+        if (detected === targetLang) {
+            addToBoard(sender, p.text, p.text, langName(detected), true);
+        } else if (el.dataset.minefunTrans) {
+            addToBoard(sender, p.text, el.dataset.minefunTrans, langName(el.dataset.minefunSrc), false);
+        }
     }
     log('再翻訳完了');
 }
@@ -445,26 +457,42 @@ function createSettingsPanel() {
     const body = document.createElement('div');
     body.id = 'minefun-hybrid-body';
 
-    // 送信
-    body.innerHTML += `<div style="font-size:11px;color:#aaa;margin-bottom:3px;">✏️ 送信の翻訳先</div>`;
+    // ---- 送信ラベル ----
+    const inputLabel = document.createElement('div');
+    inputLabel.style.cssText = 'font-size:11px;color:#aaa;margin-bottom:3px;';
+    inputLabel.textContent = '✏️ 送信の翻訳先';
+    body.appendChild(inputLabel);
+
+    // ---- 送信セレクト ----
     const inputSel = document.createElement('select');
     inputSel.id = 'minefun-input-lang';
     inputSel.style.cssText = 'width:100%;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:4px;font-size:12px;box-sizing:border-box;';
     LANGS.forEach(l => {
-        const o = document.createElement('option'); o.value = l.code; o.textContent = l.name;
+        const o = document.createElement('option');
+        o.value = l.code; o.textContent = l.name;
         if (l.code === CONFIG.inputMode) o.selected = true;
         inputSel.appendChild(o);
     });
-    inputSel.addEventListener('change', () => { CONFIG.inputMode = inputSel.value; saveConfig(); log('送信:', CONFIG.inputMode); });
+    inputSel.addEventListener('change', () => {
+        CONFIG.inputMode = inputSel.value;
+        saveConfig();
+        log('送信:', CONFIG.inputMode);
+    });
     body.appendChild(inputSel);
 
-    // 受信
-    body.innerHTML += `<div style="font-size:11px;color:#aaa;margin:8px 0 3px;">📋 受信の翻訳先</div>`;
+    // ---- 受信ラベル ----
+    const recvLabel = document.createElement('div');
+    recvLabel.style.cssText = 'font-size:11px;color:#aaa;margin:8px 0 3px;';
+    recvLabel.textContent = '📋 受信の翻訳先';
+    body.appendChild(recvLabel);
+
+    // ---- 受信セレクト ----
     const recvSel = document.createElement('select');
     recvSel.id = 'minefun-receive-lang';
     recvSel.style.cssText = 'width:100%;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:4px;font-size:12px;box-sizing:border-box;';
     LANGS.forEach(l => {
-        const o = document.createElement('option'); o.value = l.code; o.textContent = l.name;
+        const o = document.createElement('option');
+        o.value = l.code; o.textContent = l.name;
         if (l.code === CONFIG.receiveMode) o.selected = true;
         recvSel.appendChild(o);
     });
@@ -476,7 +504,7 @@ function createSettingsPanel() {
     });
     body.appendChild(recvSel);
 
-    // トグル
+    // ---- トグル群 ----
     const toggleWrap = document.createElement('div');
     toggleWrap.style.cssText = 'margin-top:8px;padding-top:8px;border-top:1px solid #333;display:flex;flex-direction:column;gap:5px;';
 
@@ -493,17 +521,14 @@ function createSettingsPanel() {
 
     toggleWrap.appendChild(mkChk('minefun-inline-chk', CONFIG.inlineEnabled, 'チャット内に訳文を表示',
         v => { CONFIG.inlineEnabled = v; retranslateAll(); }));
-
     toggleWrap.appendChild(mkChk('minefun-board-chk', CONFIG.boardEnabled, '翻訳ボードを表示',
         v => {
             CONFIG.boardEnabled = v;
             const bp = document.getElementById('minefun-board-panel');
             if (bp) bp.style.display = v ? 'flex' : 'none';
         }));
-
     toggleWrap.appendChild(mkChk('minefun-tag-chk', CONFIG.showLangTag, '言語タグを表示',
         v => { CONFIG.showLangTag = v; retranslateAll(); }));
-
     toggleWrap.appendChild(mkChk('minefun-orig-chk', CONFIG.showOriginalOnBoard, 'ボードに原文も表示',
         v => { CONFIG.showOriginalOnBoard = v; renderBoardAll(); }));
 
@@ -615,6 +640,7 @@ function createBoardPanel() {
 
 /* ==================== ショートカット ==================== */
 window.addEventListener('keydown', (e) => {
+    if (__disabled.v) return;
     if (!e.altKey) return;
     if (document.activeElement?.tagName === 'INPUT') return;
     const isRecv = e.shiftKey;
@@ -641,10 +667,14 @@ window.addEventListener('keydown', (e) => {
 
 /* ==================== 初期化 ==================== */
 function init() {
+    if (__disabled.v) return;
     createSettingsPanel();
     createBoardPanel();
     if (!detectMessageAttribute()) {
-        const t = setInterval(() => { if (detectMessageAttribute()) clearInterval(t); }, 500);
+        const t = setInterval(() => {
+            if (__disabled.v) { clearInterval(t); return; }
+            if (detectMessageAttribute()) clearInterval(t);
+        }, 500);
         setTimeout(() => clearInterval(t), 30000);
     }
     setInterval(detectMessageAttribute, 5000);
@@ -656,7 +686,7 @@ if (document.readyState === 'loading') {
     init();
 }
 
-console.log('[MineFun] 🎉 ハイブリッド版起動');
+console.log('[MineFun] 🎉 ハイブリッド版 完全修正版 起動');
 console.log('[MineFun] 送信:', CONFIG.inputMode, '| 受信:', CONFIG.receiveMode);
 console.log('[MineFun] インライン訳:', CONFIG.inlineEnabled, '| ボード:', CONFIG.boardEnabled);
 console.log('[MineFun] 元に戻すにはページリロード');
