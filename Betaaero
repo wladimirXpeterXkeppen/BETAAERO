@@ -2653,6 +2653,624 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     }), 'KeyV');
   })();
 
+  /* ===== MOD: Chat Translator ===== */
+  (function () {
+    const MOD_ID = 'chat-translator';
+
+    /* ---- Language tables ---- */
+    const LANGS = [
+      { value: 'auto',  label: 'Auto (JA->EN / others->JA)' },
+      { value: 'en',    label: 'English' },
+      { value: 'ja',    label: 'Japanese' },
+      { value: 'zh',    label: 'Chinese (Simplified)' },
+      { value: 'zh-tw', label: 'Chinese (Traditional)' },
+      { value: 'ko',    label: 'Korean' },
+      { value: 'es',    label: 'Spanish' },
+      { value: 'fr',    label: 'French' },
+      { value: 'de',    label: 'German' },
+      { value: 'pt',    label: 'Portuguese' },
+      { value: 'it',    label: 'Italian' },
+      { value: 'ru',    label: 'Russian' },
+      { value: 'ar',    label: 'Arabic' },
+      { value: 'hi',    label: 'Hindi' },
+      { value: 'th',    label: 'Thai' },
+      { value: 'vi',    label: 'Vietnamese' },
+      { value: 'id',    label: 'Indonesian' },
+      { value: 'tr',    label: 'Turkish' },
+      { value: 'nl',    label: 'Dutch' },
+      { value: 'pl',    label: 'Polish' },
+      { value: 'sv',    label: 'Swedish' },
+      { value: 'uk',    label: 'Ukrainian' }
+    ];
+    const LANG_SHORT = { ja:'JA', en:'EN', zh:'ZH', 'zh-tw':'ZH-TW', ko:'KO', es:'ES', fr:'FR', de:'DE', ru:'RU', pt:'PT', it:'IT', ar:'AR', hi:'HI', th:'TH', vi:'VI', id:'ID', tr:'TR', nl:'NL', pl:'PL', sv:'SV', uk:'UK' };
+    const LANG_NATIVE = { ja:'日本語', en:'English', zh:'中文', 'zh-tw':'中文(繁)', ko:'한국어', es:'Español', fr:'Français', de:'Deutsch', ru:'Русский', pt:'Português', it:'Italiano', vi:'Tiếng Việt', th:'ไทย', tr:'Türkçe', ar:'العربية', hi:'हिन्दी', id:'Bahasa Indonesia', nl:'Nederlands', pl:'Polski', sv:'Svenska', uk:'Українська' };
+
+    /* ---- Helpers ---- */
+    const cfg = (k, d) => Mods.gs(MOD_ID, k, d);
+    function log() { if (cfg('logToConsole', false)) console.log.apply(console, ['[ChatTranslator]'].concat(Array.prototype.slice.call(arguments))); }
+    function escapeHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+    function isTextFocused() {
+      const a = document.activeElement;
+      if (!a) return false;
+      if (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') {
+        const r = a.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return false;
+        return true;
+      }
+      return !!a.isContentEditable;
+    }
+
+    /* ---- Toast (shared style with Atmosphere / Screenshot) ---- */
+    function toast(msg, color) {
+      let el = document.getElementById('ac-toast');
+      if (!el) {
+        el = ce('div'); el.id = 'ac-toast';
+        el.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483650;background:rgba(20,28,44,.97);border:1px solid rgba(59,130,246,.55);color:#fff;padding:10px 18px;border-radius:10px;font-family:Inter,sans-serif;font-size:13px;box-shadow:0 10px 40px rgba(0,0,0,.6);transition:opacity .25s;pointer-events:none;';
+        document.body.appendChild(el);
+      }
+      if (color) el.style.borderColor = color;
+      el.textContent = msg;
+      el.style.opacity = '1';
+      clearTimeout(el._h);
+      el._h = setTimeout(function () { el.style.opacity = '0'; }, 1800);
+    }
+
+    /* ---- Translation API ---- */
+    const transCache = new Map();
+    const inFlight = new Map();
+    async function translateText(text, tl) {
+      const key = text + '|' + tl;
+      if (transCache.has(key)) return transCache.get(key);
+      if (inFlight.has(key)) return inFlight.get(key);
+      const p = (async function () {
+        const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' + tl + '&dt=t&q=' + encodeURIComponent(text);
+        const r = await fetch(url);
+        const d = await r.json();
+        const out = { text: d[0].map(function (x) { return x[0]; }).filter(Boolean).join(''), src: d[2] || 'unknown' };
+        transCache.set(key, out);
+        if (transCache.size > 800) transCache.delete(transCache.keys().next().value);
+        return out;
+      })().finally(function () { inFlight.delete(key); });
+      inFlight.set(key, p);
+      return p;
+    }
+    function pickTarget(text, mode) {
+      if (mode !== 'auto') return mode;
+      const hasJa = /[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]/.test(text);
+      return hasJa ? 'en' : 'ja';
+    }
+    function detectLangLocal(text) {
+      if (/[\u3040-\u309f\u30a0-\u30ff]/.test(text)) return 'ja';
+      if (/[\u4e00-\u9faf]/.test(text)) return 'zh';
+      if (/[\uac00-\ud7af]/.test(text)) return 'ko';
+      if (/[\u0400-\u04ff]/.test(text)) return 'ru';
+      if (/[\u0600-\u06ff]/.test(text)) return 'ar';
+      if (/[\u0e00-\u0e7f]/.test(text)) return 'th';
+      if (/[\u0900-\u097f]/.test(text)) return 'hi';
+      return 'en';
+    }
+    function langName(c) { return LANG_NATIVE[c] || c; }
+
+    /* ---- System message filter ---- */
+    const SYS_RE = new RegExp([
+      'joined the game','left the game','has joined','has left',
+      'logged in','logged out','connected','disconnected',
+      '退出しました','参加しました','入室しました','退室しました',
+      'ログインしました','ログアウトしました',
+      'が退出','が参加','が入室','が退室','が入りました','が出ました',
+      'ゲームに参加','ゲームから退出',
+      '加入了游戏','离开了游戏','已加入','已退出','已离开',
+      '加入游戏','离开游戏','进入游戏','退出游戏',
+      '참가했습니다','퇴장했습니다','입장했습니다'
+    ].join('|'), 'i');
+    function isSystemMessage(sender, text, full) {
+      if (!cfg('skipSystemMessages', true)) return false;
+      if (!sender) return true;
+      if (SYS_RE.test(text) || SYS_RE.test(full)) return true;
+      return false;
+    }
+
+    /* ---- Chat input finder ---- */
+    function findChatInput() {
+      const sels = ['input.input.active-input', 'input.input', 'input[placeholder="入力..."]', 'textarea'];
+      for (let i = 0; i < sels.length; i++) {
+        const list = document.querySelectorAll(sels[i]);
+        for (let j = 0; j < list.length; j++) {
+          const el = list[j];
+          if (el.offsetParent !== null || el === document.activeElement) return el;
+        }
+      }
+      return null;
+    }
+
+    /* ---- State ---- */
+    const st = {
+      attached: false,
+      observer: null,
+      messageDataAttribute: null,
+      inputState: 0,
+      boardData: [],
+      listEl: null,
+      boardWrap: null,
+      lastStore: null,
+      themeTimer: 0
+    };
+
+    /* ---- Inline translation ---- */
+    function ensureInline(el, translated, srcLang) {
+      el.querySelectorAll('.ac-ct-inline').forEach(function (n) { n.remove(); });
+      if (!cfg('inlineEnabled', true) || !translated) return;
+      const wrap = document.createElement('div');
+      wrap.className = 'ac-ct-inline';
+      const tag = (cfg('showLangTag', true) && srcLang)
+        ? '<span class="ac-ct-tag">' + escapeHtml(LANG_SHORT[srcLang] || String(srcLang).toUpperCase().slice(0, 2)) + '</span>'
+        : '';
+      wrap.innerHTML = tag + escapeHtml(translated);
+      const bc = cfg('inlineBorderColor', '');
+      if (bc) wrap.style.borderLeftColor = bc;
+      const tc = cfg('inlineTextColor', '');
+      if (tc) wrap.style.color = tc;
+      const fs = Number(cfg('inlineFontSize', 12)) || 12;
+      wrap.style.fontSize = fs + 'px';
+      el.appendChild(wrap);
+    }
+
+    /* ---- Message parsing ---- */
+    function extractOriginalText(el) {
+      if (el.dataset.acCtOrig) return el.dataset.acCtOrig;
+      const clone = el.cloneNode(true);
+      clone.querySelectorAll('.ac-ct-inline').forEach(function (n) { n.remove(); });
+      return String(clone.innerText || clone.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+    function parseMessage(el) {
+      if (!el) return null;
+      const full = extractOriginalText(el);
+      if (!full) return null;
+      const colonIdx = full.indexOf(':');
+      let sender = '', text = full;
+      if (colonIdx >= 0 && colonIdx < 30) {
+        sender = full.slice(0, colonIdx).replace(/^[\s★⭐]+/, '').trim();
+        text = full.slice(colonIdx + 1).trim();
+      }
+      let hasRole = false;
+      el.querySelectorAll('img').forEach(function (img) {
+        const src = img.src || '';
+        if (/Verify|Youtuber|Mod|Vanguard|Streamer/i.test(src) || img.classList.contains('icon-img')) hasRole = true;
+      });
+      return { sender: sender, text: text, full: full, hasRole: hasRole, el: el };
+    }
+    function isBadMessage(text) {
+      if (text.length > 300) return true;
+      if ((text.match(/\n/g) || []).length >= 3) return true;
+      if (/(^|\n)[^\s:]{2,20}[ \t]*:[^\n]{1,200}\n[^\s:]{2,20}[ \t]*:/.test(text)) return true;
+      return false;
+    }
+
+    /* ---- Process message ---- */
+    async function processMessage(el) {
+      if (!el || el.nodeType !== 1) return;
+      if (el.dataset.acCtDone === 'true') {
+        if (cfg('inlineEnabled', true) && !el.querySelector('.ac-ct-inline') && el.dataset.acCtTrans) {
+          ensureInline(el, el.dataset.acCtTrans, el.dataset.acCtSrc);
+        }
+        return;
+      }
+      const p = parseMessage(el);
+      if (!p) return;
+      if (isBadMessage(p.text)) { el.dataset.acCtDone = 'true'; return; }
+      if (isSystemMessage(p.sender, p.text, p.full)) { el.dataset.acCtDone = 'true'; return; }
+      el.dataset.acCtOrig = p.text;
+      const targetLang = pickTarget(p.text, cfg('receiveMode', 'auto'));
+      const detected = detectLangLocal(p.text);
+      const sender = (p.hasRole ? '[★] ' : '') + p.sender;
+      if (detected === targetLang) {
+        el.dataset.acCtDone = 'true';
+        if (cfg('boardEnabled', true)) addToBoard(sender, p.text, p.text, langName(detected), true);
+        return;
+      }
+      el.dataset.acCtDone = 'processing';
+      try {
+        const r = await translateText(p.text, targetLang);
+        if (!r.text || !r.text.trim()) { el.dataset.acCtDone = 'true'; return; }
+        el.dataset.acCtTrans = r.text;
+        el.dataset.acCtSrc = r.src;
+        el.dataset.acCtDone = 'true';
+        ensureInline(el, r.text, r.src);
+        if (cfg('boardEnabled', true)) addToBoard(sender, p.text, r.text, langName(r.src), r.src === targetLang);
+      } catch (err) {
+        el.dataset.acCtDone = 'true';
+        console.error('[ChatTranslator] receive failed:', err);
+      }
+    }
+
+    /* ---- Message attribute detection ---- */
+    function detectMessageAttribute() {
+      try {
+        const css = [].slice.call(document.styleSheets).find(function (x) { return x && x.href && x.href.indexOf('assets/Game-') >= 0; });
+        if (!css) return false;
+        const rules = [].slice.call(css.cssRules);
+        const m = rules.find(function (x) { return x && x.selectorText && x.selectorText.indexOf('.messages[data-v-') >= 0; });
+        if (!m) return false;
+        const r = m.selectorText.match(/\.messages\[(data-v-[^\]]+)\]/);
+        if (!r) return false;
+        if (r[1] !== st.messageDataAttribute) {
+          st.messageDataAttribute = r[1];
+          log('message attribute:', st.messageDataAttribute);
+          startObserver();
+        }
+        return true;
+      } catch (e) { return false; }
+    }
+    function startObserver() {
+      if (st.observer) st.observer.disconnect();
+      if (!document.body || !st.messageDataAttribute) return;
+      st.observer = new MutationObserver(function (mutations) {
+        mutations.forEach(function (m) {
+          m.addedNodes.forEach(function (node) {
+            if (node.nodeType !== 1 || !st.messageDataAttribute) return;
+            if (node.hasAttribute && node.hasAttribute(st.messageDataAttribute)) processMessage(node);
+            if (node.querySelectorAll) {
+              node.querySelectorAll('.messages[' + st.messageDataAttribute + ']').forEach(processMessage);
+            }
+          });
+        });
+      });
+      st.observer.observe(document.body, { childList: true, subtree: true });
+      document.querySelectorAll('.messages[' + st.messageDataAttribute + ']').forEach(processMessage);
+    }
+    function stopObserver() {
+      if (st.observer) { try { st.observer.disconnect(); } catch (_) {} st.observer = null; }
+    }
+
+    /* ---- Board data ---- */
+    function addToBoard(sender, original, translated, langNameStr, isSameLang) {
+      st.boardData.push({ sender: sender, original: original, translated: translated, langName: langNameStr, isSameLang: isSameLang, time: Date.now() });
+      const max = Math.max(10, Math.min(200, Number(cfg('historyMax', 50)) || 50));
+      while (st.boardData.length > max) st.boardData.shift();
+      renderBoardItem(st.boardData[st.boardData.length - 1]);
+    }
+    function buildItemHTML(item) {
+      const senderHTML = item.sender ? '<div class="ac-ct-sender">' + escapeHtml(item.sender) + '</div>' : '';
+      const langTag = (cfg('showLangTag', true) && item.langName) ? '<span class="ac-ct-tag">' + escapeHtml(item.langName) + '</span> ' : '';
+      if (item.isSameLang) return senderHTML + '<div class="ac-ct-trans">' + langTag + escapeHtml(item.original) + '</div>';
+      const origHTML = cfg('showOriginalOnBoard', true) ? '<div class="ac-ct-orig">' + escapeHtml(item.original) + '</div>' : '';
+      return senderHTML + origHTML + '<div class="ac-ct-trans">' + langTag + escapeHtml(item.translated) + '</div>';
+    }
+    function renderBoardItem(item) {
+      if (!st.listEl) return;
+      const div = document.createElement('div');
+      div.className = 'ac-ct-item';
+      div.innerHTML = buildItemHTML(item);
+      st.listEl.appendChild(div);
+      const max = Math.max(10, Math.min(200, Number(cfg('historyMax', 50)) || 50));
+      while (st.listEl.children.length > max) st.listEl.removeChild(st.listEl.firstChild);
+      st.listEl.scrollTop = st.listEl.scrollHeight;
+    }
+    function renderBoardAll() {
+      if (!st.listEl) return;
+      st.listEl.innerHTML = '';
+      st.boardData.forEach(function (item) {
+        const div = document.createElement('div');
+        div.className = 'ac-ct-item';
+        div.innerHTML = buildItemHTML(item);
+        st.listEl.appendChild(div);
+      });
+      st.listEl.scrollTop = st.listEl.scrollHeight;
+    }
+    function clearBoard() { st.boardData.length = 0; if (st.listEl) st.listEl.innerHTML = ''; }
+
+    /* ---- Retranslate all ---- */
+    async function retranslateAll() {
+      log('retranslate all');
+      const attr = st.messageDataAttribute;
+      const msgNodes = attr ? [].slice.call(document.querySelectorAll('.messages[' + attr + ']')) : [];
+      for (let i = 0; i < msgNodes.length; i++) {
+        const el = msgNodes[i];
+        const p = parseMessage(el);
+        if (!p || !p.text) continue;
+        if (isSystemMessage(p.sender, p.text, p.full)) continue;
+        const targetLang = pickTarget(p.text, cfg('receiveMode', 'auto'));
+        const detected = detectLangLocal(p.text);
+        if (detected === targetLang) {
+          el.querySelectorAll('.ac-ct-inline').forEach(function (n) { n.remove(); });
+          el.dataset.acCtDone = 'true';
+          el.dataset.acCtTrans = '';
+          el.dataset.acCtSrc = detected;
+          continue;
+        }
+        try {
+          const r = await translateText(p.text, targetLang);
+          if (r.text && r.text.trim()) {
+            el.dataset.acCtTrans = r.text;
+            el.dataset.acCtSrc = r.src;
+            el.dataset.acCtDone = 'true';
+            ensureInline(el, r.text, r.src);
+          }
+        } catch (e) {}
+      }
+      st.boardData.length = 0;
+      if (st.listEl) st.listEl.innerHTML = '';
+      for (let i = 0; i < msgNodes.length; i++) {
+        const el = msgNodes[i];
+        const p = parseMessage(el);
+        if (!p || !p.text) continue;
+        if (isSystemMessage(p.sender, p.text, p.full)) continue;
+        const sender = (p.hasRole ? '[★] ' : '') + p.sender;
+        const detected = detectLangLocal(p.text);
+        const targetLang = pickTarget(p.text, cfg('receiveMode', 'auto'));
+        if (detected === targetLang) {
+          addToBoard(sender, p.text, p.text, langName(detected), true);
+        } else if (el.dataset.acCtTrans) {
+          addToBoard(sender, p.text, el.dataset.acCtTrans, langName(el.dataset.acCtSrc), false);
+        }
+      }
+    }
+
+    /* ---- Send hook ---- */
+    async function onSendKeyDown(e) {
+      if (!st.attached) return;
+      if (e.key !== 'Enter') return;
+      if (e.isComposing || e.keyCode === 229) return;
+      const input = findChatInput();
+      if (!input || e.target !== input) return;
+      if (st.inputState !== 0) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+      if (!cfg('inputEnabled', true)) return;
+      const original = (input.value || '').trim();
+      if (!original) return;
+      const prefixes = ['/', '!'];
+      for (let i = 0; i < prefixes.length; i++) if (original.indexOf(prefixes[i]) === 0) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      st.inputState = 1;
+      log('send translate:', original);
+      let translated = original;
+      try {
+        const tl = pickTarget(original, cfg('inputMode', 'auto'));
+        const r = await translateText(original, tl);
+        translated = r.text.replace(/\n+/g, ' ').trim();
+        log('send result:', translated, '(->', tl + ')');
+      } catch (err) { console.error('[ChatTranslator] send failed:', err); }
+      if (!translated) translated = original;
+      input.value = translated;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      st.inputState = 2;
+      const opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+      input.dispatchEvent(new KeyboardEvent('keydown', opts));
+      input.dispatchEvent(new KeyboardEvent('keyup', opts));
+      setTimeout(function () { st.inputState = 0; }, 200);
+    }
+    function onSendKeyUp(e) {
+      if (!st.attached) return;
+      if (e.key !== 'Enter') return;
+      if (e.isComposing || e.keyCode === 229) return;
+      const input = findChatInput();
+      if (!input || e.target !== input) return;
+      if (st.inputState === 1) { e.preventDefault(); e.stopImmediatePropagation(); }
+    }
+
+    /* ---- Toggle key ---- */
+    function onToggleKey(e) {
+      if (!st.attached) return;
+      if (e.repeat) return;
+      if (isTextFocused()) return;
+      if (document.body.classList.contains('ac-editing')) return;
+      if (document.querySelector('.ac-overlay') || document.querySelector('.ac-modal-mask')) return;
+      const k = cfg('toggleKey', 'KeyL');
+      if (!k || k === 'None') return;
+      if (e.code !== k) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      const next = !cfg('inputEnabled', true);
+      Mods.ss(MOD_ID, 'inputEnabled', next);
+      toast(next ? 'Chat send translation: ON' : 'Chat send translation: OFF', next ? '#22c55e' : '#ef4444');
+    }
+
+    /* ---- Theme sync ---- */
+    function syncThemeClass() {
+      const aero = !!document.getElementById('ac-theme-aero');
+      const moon = !!document.getElementById('ac-theme-moon');
+      document.documentElement.classList.toggle('ac-ct-aero', aero);
+      document.documentElement.classList.toggle('ac-ct-moon', moon);
+    }
+
+    /* ---- CSS injection ---- */
+    function injectCSS() {
+      if (document.getElementById('ac-ct-style')) return;
+      const s = document.createElement('style');
+      s.id = 'ac-ct-style';
+      s.textContent = [
+        '.ac-ct-board{',
+        'display:flex;flex-direction:column;',
+        'min-width:180px;min-height:120px;',
+        'background:var(--ct-bg,rgba(15,15,20,.9));',
+        'color:var(--ct-text,#e6e9ef);',
+        'border:1px solid var(--ct-border,rgba(255,255,255,.1));',
+        'border-radius:6px;',
+        'font-family:system-ui,Inter,sans-serif;font-size:12px;',
+        'overflow:hidden;',
+        'box-shadow:0 4px 16px rgba(0,0,0,.5);',
+        'pointer-events:auto;',
+        '}',
+        '.ac-ct-board-header{',
+        'display:flex;justify-content:space-between;align-items:center;',
+        'padding:6px 8px;',
+        'background:var(--ct-header-bg,rgba(255,255,255,.05));',
+        'border-bottom:1px solid var(--ct-border,rgba(255,255,255,.1));',
+        'font-weight:700;flex-shrink:0;',
+        '}',
+        '.ac-ct-board-list{flex:1;overflow-y:auto;padding:2px 4px;}',
+        '.ac-ct-board-list::-webkit-scrollbar{width:6px;}',
+        '.ac-ct-board-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:3px;}',
+        '.ac-ct-item{border-bottom:1px solid var(--ct-divider,rgba(255,255,255,.08));padding:6px 4px;}',
+        '.ac-ct-item:last-child{border-bottom:none;}',
+        '.ac-ct-sender{color:var(--ct-sender,#7ec8e3);font-size:11px;font-weight:bold;margin-bottom:3px;}',
+        '.ac-ct-orig{color:var(--ct-orig,#888);font-size:11px;margin-bottom:2px;}',
+        '.ac-ct-trans{color:var(--ct-text,#fff);font-size:12px;word-break:break-word;}',
+        '.ac-ct-tag{',
+        'display:inline-block;margin-right:4px;padding:0 4px;',
+        'background:var(--ct-tag-bg,rgba(59,130,246,.18));',
+        'border:1px solid var(--ct-tag-border,rgba(59,130,246,.35));',
+        'border-radius:3px;font-size:.78em;font-weight:700;letter-spacing:.4px;',
+        'color:var(--ct-accent,#93c5fd);vertical-align:middle;',
+        '}',
+        '.ac-ct-btn{',
+        'background:var(--ct-btn-bg,rgba(255,255,255,.08));',
+        'color:var(--ct-btn-text,#fff);',
+        'border:1px solid var(--ct-border,rgba(255,255,255,.1));',
+        'padding:2px 7px;border-radius:3px;cursor:pointer;font-size:11px;font-family:inherit;',
+        'transition:filter .15s;',
+        '}',
+        '.ac-ct-btn:hover{filter:brightness(1.2);}',
+        '.ac-ct-inline{',
+        'margin-top:3px;padding:2px 0 0 8px;',
+        'border-left:2px solid var(--ct-inline-border,#3b82f6);',
+        'color:var(--ct-inline-text,#a5d8ff);',
+        'opacity:.92;pointer-events:none;line-height:1.35;word-break:break-word;',
+        '}',
+        'html.ac-ct-aero .ac-ct-board{',
+        '--ct-bg:rgba(10,15,24,.94);--ct-text:#b8e4f0;--ct-border:#1a3545;',
+        '--ct-header-bg:rgba(74,200,232,.06);--ct-divider:rgba(74,200,232,.12);',
+        '--ct-sender:#7bdbef;--ct-orig:#4a7a8a;--ct-accent:#4ac8e8;',
+        '--ct-tag-bg:rgba(74,200,232,.14);--ct-tag-border:rgba(74,200,232,.4);',
+        '--ct-btn-bg:rgba(74,200,232,.15);--ct-btn-text:#7bdbef;',
+        '--ct-inline-border:#4ac8e8;--ct-inline-text:#b8e4f0;',
+        '}',
+        'html.ac-ct-moon .ac-ct-board{',
+        '--ct-bg:rgba(10,5,24,.94);--ct-text:#e0d8f0;--ct-border:#3a2860;',
+        '--ct-header-bg:rgba(200,184,232,.06);--ct-divider:rgba(200,184,232,.12);',
+        '--ct-sender:#c8b8e8;--ct-orig:#8a78b0;--ct-accent:#e8d8a8;',
+        '--ct-tag-bg:rgba(232,216,168,.14);--ct-tag-border:rgba(232,216,168,.4);',
+        '--ct-btn-bg:rgba(200,184,232,.15);--ct-btn-text:#e8ddf5;',
+        '--ct-inline-border:#e8d8a8;--ct-inline-text:#e0d8f0;',
+        '}'
+      ].join('');
+      document.head.appendChild(s);
+    }
+
+    /* ---- Board HUD ---- */
+    function registerBoard() {
+      HUD.register('chat-translator-board', {
+        modId: MOD_ID,
+        defaultX: 10,
+        defaultY: Math.max(20, window.innerHeight - 300),
+        render: function (el) {
+          el.innerHTML =
+            '<div class="ac-ct-board" style="width:280px;height:280px;">' +
+              '<div class="ac-ct-board-header">' +
+                '<span>Translation Board</span>' +
+                '<div style="display:flex;gap:6px;align-items:center;">' +
+                  '<button type="button" class="ac-ct-btn ac-ct-clear">Clear</button>' +
+                '</div>' +
+              '</div>' +
+              '<div class="ac-ct-board-list"></div>' +
+            '</div>';
+          st.boardWrap = el.querySelector('.ac-ct-board');
+          st.listEl = el.querySelector('.ac-ct-board-list');
+          const clr = el.querySelector('.ac-ct-clear');
+          if (clr) clr.addEventListener('click', function (e) { e.stopPropagation(); clearBoard(); });
+          renderBoardAll();
+        },
+        update: function (el) {
+          const editing = document.body.classList.contains('ac-editing');
+          const enabled = editing || cfg('boardEnabled', true);
+          if (st.boardWrap) {
+            st.boardWrap.style.display = enabled ? 'flex' : 'none';
+            const w = Math.max(180, Math.min(600, Number(cfg('boardWidth', 280)) || 280));
+            const h = Math.max(120, Math.min(600, Number(cfg('boardHeight', 280)) || 280));
+            st.boardWrap.style.width = w + 'px';
+            st.boardWrap.style.height = h + 'px';
+          }
+          el.style.opacity = String(Math.max(0.2, Math.min(1, Number(cfg('boardOpacity', 0.9)) || 0.9)));
+        }
+      });
+    }
+
+    /* ---- Attach / detach ---- */
+    function attach() {
+      st.attached = true;
+      injectCSS();
+      registerBoard();
+      syncThemeClass();
+      if (!st.themeTimer) st.themeTimer = setInterval(syncThemeClass, 1000);
+      startObserver();
+      if (!st.messageDataAttribute) {
+        const t = setInterval(function () {
+          if (!st.attached) { clearInterval(t); return; }
+          if (detectMessageAttribute()) clearInterval(t);
+        }, 500);
+        setTimeout(function () { clearInterval(t); }, 30000);
+      }
+      document.addEventListener('keydown', onSendKeyDown, true);
+      document.addEventListener('keyup', onSendKeyUp, true);
+      document.addEventListener('keydown', onToggleKey, true);
+    }
+    function detach() {
+      st.attached = false;
+      stopObserver();
+      document.removeEventListener('keydown', onSendKeyDown, true);
+      document.removeEventListener('keyup', onSendKeyUp, true);
+      document.removeEventListener('keydown', onToggleKey, true);
+      if (st.themeTimer) { clearInterval(st.themeTimer); st.themeTimer = 0; }
+      document.documentElement.classList.remove('ac-ct-aero', 'ac-ct-moon');
+    }
+
+    /* ---- Mod registration ---- */
+    Mods.reg({
+      id: MOD_ID,
+      name: 'Chat Translator',
+      category: 'Visual',
+      icon: 'svg:chatTranslate',
+      description: 'Real-time chat translation (send + receive) with inline display and a movable board',
+      defaultEnabled: false,
+      settings: [
+        { id: 'inputEnabled',       type: 'toggle',   label: 'Send: translate on Enter',       default: true },
+        { id: 'inputMode',          type: 'dropdown', label: '  Send target language',         options: LANGS, default: 'auto' },
+        { id: 'receiveMode',        type: 'dropdown', label: 'Receive target language',        options: LANGS, default: 'auto' },
+        { id: 'skipSystemMessages', type: 'toggle',   label: 'Skip system messages',           default: true },
+        { id: 'toggleKey',          type: 'keybind',  label: 'Toggle send translation key',    default: 'KeyL' },
+
+        { id: 'inlineEnabled',      type: 'toggle',   label: 'Inline translation in chat',     default: true },
+        { id: 'showLangTag',        type: 'toggle',   label: '  Show language tag',            default: true },
+        { id: 'inlineBorderColor',  type: 'color',    label: '  Inline border color',          default: '#3b82f6' },
+        { id: 'inlineTextColor',    type: 'color',    label: '  Inline text color',            default: '#a5d8ff' },
+        { id: 'inlineFontSize',     type: 'slider',   label: '  Inline font size',             min: 8, max: 24, step: 1, default: 12 },
+
+        { id: 'boardEnabled',       type: 'toggle',   label: 'Show translation board',         default: true },
+        { id: 'showOriginalOnBoard',type: 'toggle',   label: '  Show original text',           default: true },
+        { id: 'boardOpacity',       type: 'slider',   label: '  Board opacity',                min: 0.2, max: 1, step: 0.05, default: 0.9 },
+        { id: 'boardWidth',         type: 'slider',   label: '  Board width (px)',             min: 180, max: 600, step: 10, default: 280 },
+        { id: 'boardHeight',        type: 'slider',   label: '  Board height (px)',            min: 120, max: 600, step: 10, default: 280 },
+        { id: 'historyMax',         type: 'slider',   label: '  Board history limit',          min: 10, max: 200, step: 5, default: 50 },
+
+        { id: 'logToConsole',       type: 'toggle',   label: 'Log to console',                 default: false },
+        { id: '__retranslate',      type: 'button',   label: 'Retranslate all messages',       buttonText: 'Retranslate Now' },
+        { id: '__clearboad',        type: 'button',   label: 'Clear translation board',        buttonText: 'Clear Board' }
+      ],
+      init() {
+        this._attached = false;
+        this._btnActions = {
+          '__retranslate': function () { retranslateAll(); toast('Retranslating...', '#93c5fd'); },
+          '__clearboad':   function () { clearBoard(); toast('Board cleared', '#FFD766'); }
+        };
+        injectCSS();
+        registerBoard();
+      },
+      apply(enabled, store) {
+        const self = this;
+        if (enabled) {
+          if (!self._attached) { attach(); self._attached = true; }
+          if (st.lastStore && st.lastStore.receiveMode !== store.receiveMode) retranslateAll();
+          st.lastStore = { receiveMode: store.receiveMode };
+        } else {
+          if (self._attached) { detach(); self._attached = false; }
+          st.lastStore = null;
+        }
+      },
+      destroy() {
+        if (this._attached) { detach(); this._attached = false; }
+        stopObserver();
+      }
+    });
+  })();
+
 /* ===== MOD: FPS Booster ===== */
   Mods.reg({
     id: 'fpsbooster', name: 'FPS Booster', category: 'Performance', icon: 'svg:lightning', description: 'WebGL/Effects/Timer optimization', defaultEnabled: false,
