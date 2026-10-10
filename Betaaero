@@ -3095,16 +3095,24 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       st.observer = new MutationObserver(function (mutations) {
         mutations.forEach(function (m) {
           m.addedNodes.forEach(function (node) {
-            if (node.nodeType !== 1 || !st.messageDataAttribute) return;
-            if (node.hasAttribute && node.hasAttribute(st.messageDataAttribute)) processMessage(node);
+            if (node.nodeType !== 1) return;
+
+            // ★ node 自身が .message かどうか
+            if (node.classList && node.classList.contains('message')) {
+              processMessage(node);
+            }
+
+            // ★ node 内の .message を全て処理(セレクタ修正)
             if (node.querySelectorAll) {
-              node.querySelectorAll('.messages[' + st.messageDataAttribute + ']').forEach(processMessage);
+              node.querySelectorAll('.message').forEach(processMessage);
             }
           });
         });
       });
       st.observer.observe(document.body, { childList: true, subtree: true });
-      document.querySelectorAll('.messages[' + st.messageDataAttribute + ']').forEach(processMessage);
+
+      // ★ 起動時に既存メッセージを処理
+      document.querySelectorAll('.message').forEach(processMessage);
     }
     function stopObserver() {
       if (st.observer) { try { st.observer.disconnect(); } catch (_) {} st.observer = null; }
