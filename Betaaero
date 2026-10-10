@@ -3207,13 +3207,14 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       if (!original) return;
       const prefixes = ['/', '!'];
       for (let i = 0; i < prefixes.length; i++) if (original.indexOf(prefixes[i]) === 0) return;
-      e.preventDefault(); e.stopImmediatePropagation();
+   　　e.preventDefault(); e.stopImmediatePropagation();
       st.inputState = 1;
+      addToContext('You', original);   // ★ 自分の発言もコンテキストへ
       log('send translate:', original);
       let translated = original;
       try {
         const tl = pickTarget(original, cfg('inputMode', 'auto'));
-        const r = await translateText(original, tl);
+        const r = await translateText(original, tl, 'send');
         translated = r.text.replace(/\n+/g, ' ').trim();
         log('send result:', translated, '(->', tl + ')');
       } catch (err) { console.error('[ChatTranslator] send failed:', err); }
