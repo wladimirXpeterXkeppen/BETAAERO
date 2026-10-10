@@ -3034,10 +3034,19 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         }
         return;
       }
-      const p = parseMessage(el);
+          const p = parseMessage(el);
       if (!p) return;
       if (isBadMessage(p.text)) { el.dataset.acCtDone = 'true'; return; }
-      if (isSystemMessage(p.sender, p.text, p.full)) { el.dataset.acCtDone = 'true'; return; }
+
+      // ★ システムメッセージ: コンテキストにも入れず、翻訳もしない
+      if (isSystemMessage(p.sender, p.text, p.full)) {
+        el.dataset.acCtDone = 'true';
+        return;
+      }
+
+      // ★ コンテキストに追加
+      addToContext(p.sender, p.text);
+
       el.dataset.acCtOrig = p.text;
       const targetLang = pickTarget(p.text, cfg('receiveMode', 'auto'));
       const detected = detectLangLocal(p.text);
@@ -3049,7 +3058,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       }
       el.dataset.acCtDone = 'processing';
       try {
-        const r = await translateText(p.text, targetLang);
+        const r = await translateText(p.text, targetLang, 'receive');
         if (!r.text || !r.text.trim()) { el.dataset.acCtDone = 'true'; return; }
         el.dataset.acCtTrans = r.text;
         el.dataset.acCtSrc = r.src;
