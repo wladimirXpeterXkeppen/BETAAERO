@@ -2979,6 +2979,14 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     function ensureInline(el, translated, srcLang) {
       el.querySelectorAll('.ac-ct-inline').forEach(function (n) { n.remove(); });
       if (!cfg('inlineEnabled', true) || !translated) return;
+
+      // ★ 追加前にスクロール状態を記録
+      const container = el.closest('.messages');
+      const wasAtBottom = container
+        ? (container.scrollHeight - container.scrollTop - container.clientHeight < 40)
+        : false;
+      const prevScrollTop = container ? container.scrollTop : 0;
+
       const wrap = document.createElement('div');
       wrap.className = 'ac-ct-inline';
       const tag = (cfg('showLangTag', true) && srcLang)
@@ -2992,6 +3000,17 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       const fs = Number(cfg('inlineFontSize', 12)) || 12;
       wrap.style.fontSize = fs + 'px';
       el.appendChild(wrap);
+
+      // ★ 追加後にスクロール位置を調整
+      if (container) {
+        if (wasAtBottom) {
+          // ユーザーが最下部にいた → 最下部に固定
+          container.scrollTop = container.scrollHeight;
+        } else {
+          // ユーザーが上にスクロールしていた → 位置を維持
+          container.scrollTop = prevScrollTop;
+        }
+      }
     }
 
     /* ---- Message parsing ---- */
