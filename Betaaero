@@ -3484,8 +3484,30 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       init() {
         this._attached = false;
         this._btnActions = {
-          '__retranslate': function () { retranslateAll(); toast('Retranslating...', '#93c5fd'); },
-          '__clearboad':   function () { clearBoard(); toast('Board cleared', '#FFD766'); }
+          '__retranslate': function () {
+            retranslateAll();
+            toast('Retranslating...', '#93c5fd');
+          },
+          '__clearboad': function () {
+            clearBoard();
+            toast('Board cleared', '#FFD766');
+          },
+          '__testTranslate': async function () {
+            try {
+              toast('Testing...', '#93c5fd');
+              const r = await translateText('gg ez', 'ja', 'receive');
+              toast('OK: ' + r.text, '#22c55e');
+              console.log('[ChatTranslator] test OK:', r);
+            } catch (e) {
+              toast('NG: ' + e.message, '#ef4444');
+              console.error('[ChatTranslator] test failed:', e);
+            }
+          },
+          '__clearCache': function () {
+            transCache.clear();
+            inFlight.clear();
+            toast('Cache cleared', '#22c55e');
+          }
         };
         injectCSS();
         registerBoard();
