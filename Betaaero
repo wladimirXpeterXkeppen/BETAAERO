@@ -2836,17 +2836,76 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     }
 
     /* ---- Translation API ---- */
-    const transCache = new Map();
+        const transCache = new Map();
     const inFlight = new Map();
-    async function translateText(text, tl) {
-      const key = text + '|' + tl;
+
+    async function _trGoogle(text, tl) {
+      const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' + tl + '&dt=t&q=' + encodeURIComponent(text);
+      const r = await fetch(url);
+      if (!r.ok) throw new Error('Google ' + r.status);
+      const d = await r.json();
+      return {
+        text: (d[0] || []).map(function (x) { return x[0]; }).filter(Boolean).join(''),
+        src: d[2] || 'unknown',
+        provider: 'google'
+      };
+    }
+
+    async function _trProxy(text, tl, direction) {
+      const base = cfg('proxyURL', '');
+      if (!base) throw new Error('Worker URL not set');
+      const r = await fetch(base.replace(/\/$/, '') + '/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [
+            { role: 'system', content: buildSystemPrompt(tl, direction) },
+            { role: 'user',   content: buildUserPrompt(text) }
+          ],
+          targetLang: LANG_NAMES[tl] || tl
+        })
+      });
+      if (!r.ok) {
+        const e = await r.json().catch(function () { return {}; });
+        throw new Error('Proxy ' + r.status + ': ' + (e.error || 'unknown'));
+      }
+      const d = await r.json();
+      const c = d.choices && d.choices[0] && d.choices[0].message ? d.choices[0].message.content : '';
+      return {
+        text: String(c).trim().replace(/^["'「『]+|["'」』]+$/g, '').trim(),
+        src: detectLangLocal(text),
+        provider: 'proxy'
+      };
+    }
+
+    async function _trSimply(text, tl) {
+      const r = await fetch('https://api.simplytranslate.ai/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text, from: 'auto', to: tl })
+      });
+      if (!r.ok) throw new Error('SimplyTranslate ' + r.status);
+      const d = await r.json();
+      return { text: d.result, src: d.from || detectLangLocal(text), provider: 'simplytranslate' };
+    }
+
+    const _TR_FN = { google: _trGoogle, proxy: _trProxy, simplytranslate: _trSimply };
+
+    async function translateText(text, tl, direction) {
+      direction = direction || 'receive';
+      const prov = cfg('provider', 'google');
+      const styleKey = direction === 'send' ? 'sendStylePreset' : 'stylePreset';
+      const ctxKey = prov === 'proxy'
+        ? (direction + '|' + cfg(styleKey, 'default') + '|' + buildContext().slice(-40))
+        : '';
+      const key = prov + '|' + tl + '|' + ctxKey + '|' + text;
       if (transCache.has(key)) return transCache.get(key);
       if (inFlight.has(key)) return inFlight.get(key);
       const p = (async function () {
-        const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' + tl + '&dt=t&q=' + encodeURIComponent(text);
-        const r = await fetch(url);
-        const d = await r.json();
-        const out = { text: d[0].map(function (x) { return x[0]; }).filter(Boolean).join(''), src: d[2] || 'unknown' };
+        const fn = _TR_FN[prov];
+        if (!fn) throw new Error('Unknown provider: ' + prov);
+        const out = await fn(text, tl, direction);
+        if (!out || !out.text) throw new Error('Empty translation');
         transCache.set(key, out);
         if (transCache.size > 800) transCache.delete(transCache.keys().next().value);
         return out;
