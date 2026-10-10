@@ -3477,7 +3477,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
 
         { id: 'logToConsole',       type: 'toggle',   label: 'Log to console',                 default: false },
         { id: '__retranslate',      type: 'button',   label: 'Retranslate all messages',       buttonText: 'Retranslate Now' },
-        { id: '__clearboad',        type: 'button',   label: 'Clear translation board',        buttonText: 'Clear Board' }
+        { id: '__clearboad',        type: 'button',   label: 'Clear translation board',        buttonText: 'Clear Board' },
+        { id: '__testTranslate',    type: 'button',   label: 'Connection test',                buttonText: 'Test' },
+        { id: '__clearCache',       type: 'button',   label: 'Clear translation cache',        buttonText: 'Clear Cache' }
       ],
       init() {
         this._attached = false;
