@@ -2693,7 +2693,90 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
   /* ===== MOD: Chat Translator ===== */
   (function () {
     const MOD_ID = 'chat-translator';
+    /* ---- Provider / Prompt / Style / Context (追加) ---- */
+    const LANG_NAMES = {
+      en:'English', ja:'Japanese', ko:'Korean', zh:'Chinese',
+      'zh-tw':'Traditional Chinese', es:'Spanish', fr:'French',
+      de:'German', ru:'Russian', pt:'Portuguese', it:'Italian',
+      ar:'Arabic', hi:'Hindi', th:'Thai', vi:'Vietnamese',
+      id:'Indonesian', tr:'Turkish', nl:'Dutch', pl:'Polish',
+      sv:'Swedish', uk:'Ukrainian'
+    };
 
+    const STYLE_PRESETS = {
+      'default':   '',
+      'casual':    'Style: casual, friendly tone. Japanese: タメ口.',
+      'polite':    'Style: polite, respectful. Japanese: 敬語 (です・ます).',
+      'gamer':     'Style: hardcore gamer slang, hyped. Japanese: ゲーマー用語多め、テンション高め.',
+      'tsundere':  'Style: tsundere personality. Japanese: ツンデレ口調 (「〜だし」「別に…」).',
+      'kawaii':    'Style: cute/kawaii. Japanese: 可愛い口調 (「〜だよ♪」「〜なの」).',
+      'chuuni':    'Style: chuunibyou dramatic. Japanese: 「我が名は…」のような厨二口調.',
+      'butler':    'Style: butler tone. Japanese: 「〜でございます」「お嬢様/旦那様」.',
+      'kansai':    'Style: Kansai dialect. Japanese: 関西弁 (「〜やで」「〜やんか」).',
+      'kyoto':     'Style: Kyoto dialect. Japanese: 京都弁 (「〜どす」).',
+      'tohoku':    'Style: Tohoku dialect. Japanese: 東北弁 (「〜だべ」「〜っちゃ」).',
+      'cat':       'Style: Add "nya" at the end. Japanese: 「〜にゃ」「〜にゃん」.',
+      'robot':     'Style: robot tone. Japanese: 「〜デス」「〜マス」カタカナ多め.',
+      'pirate':    'Style: pirate. Japanese: 海賊口調.',
+      'yakuza':    'Style: yakuza. Japanese: 「〜やぞ」「〜やないか」.'
+    };
+
+    const DEFAULT_PROMPTS = {
+      system:
+        'You are a translator for MineFun.io (BedWars, SkyWars, The War). ' +
+        'Translate the message into {{targetLang}}. ' +
+        'Rules: 1) Use recent chat context to resolve pronouns/slang. ' +
+        '2) Preserve original tone. ' +
+        '3) Keep gaming acronyms as-is: gg, wp, ez, gl, hf, noob, clutch, op. ' +
+        '4) Do NOT translate usernames/numbers. ' +
+        '5) Output ONLY the translated text. ' +
+        '{{extraStyle}}',
+      user: '{{context}}Translate this message:\n{{text}}'
+    };
+
+    /* ---- Context buffer ---- */
+    const ctxBuffer = [];
+    const CTX_MAX = 20;
+
+    function addToContext(sender, text) {
+      ctxBuffer.push({ sender: sender, text: text, at: Date.now() });
+      while (ctxBuffer.length > CTX_MAX) ctxBuffer.shift();
+    }
+    function buildContext() {
+      const n = cfg('contextSize', 5);
+      if (!n || ctxBuffer.length === 0) return '';
+      return ctxBuffer.slice(-n).map(function (m) {
+        return m.sender + ': ' + m.text;
+      }).join('\n');
+    }
+    function buildSystemPrompt(tl, direction) {
+      direction = direction || 'receive';
+      const tpl = cfg('customPromptEnabled', false)
+        ? cfg('systemPrompt', DEFAULT_PROMPTS.system)
+        : DEFAULT_PROMPTS.system;
+
+      const presetKey = direction === 'send' ? 'sendStylePreset' : 'stylePreset';
+      const extraKey  = direction === 'send' ? 'sendExtraStyle'  : 'extraStyle';
+
+      const preset = cfg(presetKey, 'default');
+      let style = STYLE_PRESETS[preset] || '';
+      const extra = cfg(extraKey, '');
+      if (extra) style = style ? style + '\n' + extra : extra;
+
+      return tpl
+        .replace(/\{\{targetLang\}\}/g, LANG_NAMES[tl] || tl)
+        .replace(/\{\{extraStyle\}\}/g, style);
+    }
+    function buildUserPrompt(text) {
+      const tpl = cfg('customPromptEnabled', false)
+        ? cfg('userPrompt', DEFAULT_PROMPTS.user)
+        : DEFAULT_PROMPTS.user;
+      const ctx = buildContext();
+      const contextBlock = ctx ? 'Recent chat:\n' + ctx + '\n\n' : '';
+      return tpl
+        .replace(/\{\{context\}\}/g, contextBlock)
+        .replace(/\{\{text\}\}/g, text);
+    }
     /* ---- Language tables ---- */
     const LANGS = [
       { value: 'auto',  label: 'Auto (JA->EN / others->JA)' },
