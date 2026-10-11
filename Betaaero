@@ -2542,8 +2542,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         '}',
         '.ac-spd[data-orientation="horizontal"] .spd-bar{width:60px;flex-shrink:0;}',
         '.ac-spd[data-orientation="horizontal"] .spd-graph{width:80px;flex-shrink:0;}',
-        '  body.ac-not-in-game .ac-hud[data-hud-id="armor"]{display:none!important;}
-  /* ac-no-armor は HUD を消さない(空スロット表示に任せる) */'
+        'body.ac-not-in-game .ac-hud[data-hud-id="armor"]{display:none!important;}'
       ].join('');
       document.head.appendChild(s);
     })();
