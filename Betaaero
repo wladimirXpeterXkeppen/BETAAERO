@@ -2305,6 +2305,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     }
 
     /* ---- Tick loop ---- */
+    // ★ 追加: キャッシュとスロットル
+    var _cache = { el: null, numEl: null, unitEl: null, maxEl: null, avgEl: null, fillEl: null, vertEl: null, graphEl: null, graphColor: '', lastTextUpdate: 0, lastGraphUpdate: 0 };
+
     function tick() {
       if (!state.running) return;
       state.rafId = requestAnimationFrame(tick);
@@ -2330,8 +2333,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           let fSpeed = 0;
           try {
             const rot = gw.player.rotation;
-            const yaw = (typeof rot === 'number') ? rot
-                      : (rot && typeof rot.y === 'number') ? rot.y : 0;
+            const yaw = (typeof rot === 'number') ? rot : (rot && typeof rot.y === 'number') ? rot.y : 0;
             const fx = Math.sin(yaw);
             const fz = Math.cos(yaw);
             fSpeed = (dx * fx + dz * fz) / dt;
@@ -2356,7 +2358,12 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       }
       state.lastPos = { x: p.x, y: p.y, z: p.z };
       state.lastTime = now;
-      updateHud();
+
+      // ★ 更新は 30fps に制限(60fps の半分)
+      if (now - _cache.lastTextUpdate >= 33) {
+        _cache.lastTextUpdate = now;
+        updateHud();
+      }
     }
 
     /* ---- HUD update ---- */
