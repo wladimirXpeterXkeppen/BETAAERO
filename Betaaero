@@ -4729,7 +4729,8 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         const hasReal = arr && arr.some(v => normId(v) > 0);
         let ordered;
         if (hasReal) { ordered = [arr[2], arr[0], arr[1], arr[3]]; }
-        else if (editing || alwaysShow) {
+        else if (editing) {
+          // ★ 編集モードの時だけダミー表示
           const ids = Object.keys(st._map || {}).map(Number).filter(n => n > 0);
           ordered = [];
           if (ids.length) {
@@ -4739,6 +4740,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           }
           while (ordered.length < 4) ordered.push(0);
           if (!st._map && st._loadArmor) st._loadArmor(s.armorJsonURL || 'https://celestarminefun.github.io/client/armor/armor.json');
+        } else if (alwaysShow) {
+          // ★ alwaysShow は空スロットのみ(ダミーなし)
+          ordered = [0, 0, 0, 0];
         } else { w.replaceChildren(); return; }
         const key = ordered.map(v => typeof v === 'object' ? normId(v) : (Number(v) || 0)).join(',') + '|' + (s.orientation || 'v') + '|' + (s.iconSize || 28) + '|' + (s.style || 'wood') + '|' + (s.showEmptySlots ? 1 : 0) + '|' + (hasReal ? 'r' : 'd');
         if (key === lastKey) return;
