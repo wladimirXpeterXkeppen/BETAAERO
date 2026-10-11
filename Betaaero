@@ -3288,8 +3288,11 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       } catch (err) {
         console.error('[ChatTranslator] send failed:', err);
       }
-
       if (!translated) translated = original;
+      input.value = translated;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      st.inputState = 2;
+      // ...以下そのまま
       input.value = translated;
       input.dispatchEvent(new Event('input', { bubbles: true }));
       st.inputState = 2;
