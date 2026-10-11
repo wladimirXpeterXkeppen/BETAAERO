@@ -2448,6 +2448,89 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       if (_cache.fillEl) {
         const pct = Math.max(0, Math.min(100, (state.speed / barMax) * 100));
         _cache.fillEl.style.width = pct + '%';
+        let fillCol;
+        if (pct < 33) fillCol = '#22c55e';
+        else if (pct < 66) fillCol = '#eab308';
+        else fillCol = '#ef4444';
+        _cache.fillEl.style.background = fillCol;
+      }
+
+      if (showGraph && _cache.graphEl) {
+        const now = performance.now();
+        if (now - _cache.lastGraphUpdate >= 100) {
+          _cache.lastGraphUpdate = now;
+          let graphColor = _cache.graphColor;
+          if (!graphColor) {
+            if (theme === 'rainbow') {
+              graphColor = 'hsl(' + state.rainbowHue + ',100%,65%)';
+            } else {
+              const s2 = el.querySelector('.ac-spd');
+              graphColor = s2
+                ? (getComputedStyle(s2).getPropertyValue('--spd-graph-color') || '#3b82f6').trim()
+                : '#3b82f6';
+            }
+            _cache.graphColor = graphColor;
+          }
+          drawGraph(_cache.graphEl, mode, graphColor);
+        }
+      }
+    }
+    function updateHud() {
+      const el = state.hudEl;
+      if (!el) return;
+      _refreshCache(el);
+
+      const theme    = Mods.gs('speedometer', 'theme', 'default');
+      const mode     = Mods.gs('speedometer', 'mode', 'horizontal');
+      const unit     = Mods.gs('speedometer', 'unit', 'bs');
+      const decimals = Mods.gs('speedometer', 'decimals', 2);
+      const barMax   = Mods.gs('speedometer', 'barMax', 15) || 15;
+      const showGraph= Mods.gs('speedometer', 'showGraph', false);
+      const f = unitFactor(unit);
+
+      if (theme === 'rainbow') {
+        state.rainbowHue = (state.rainbowHue + 1.2) % 360;
+        const s = el.querySelector('.ac-spd');
+        if (s) {
+          const col = 'hsl(' + state.rainbowHue + ',100%,65%)';
+          s.style.setProperty('--spd-border', col);
+          s.style.setProperty('--spd-label-color', col);
+          s.style.setProperty('--spd-unit-color', col);
+          s.style.setProperty('--spd-extra-color', col);
+          s.style.setProperty('--spd-graph-color', col);
+          _cache.graphColor = col;
+        }
+      }
+
+      if (_cache.numEl)  _cache.numEl.textContent  = (state.speed * f).toFixed(decimals);
+      if (_cache.unitEl) _cache.unitEl.textContent = unitLabel(unit);
+      if (_cache.vertEl) {
+        if (mode === 'all') {
+          _cache.vertEl.style.display = '';
+          _cache.vertEl.textContent = 'H ' + (state.speed * f).toFixed(decimals) +
+                                      '  V ' + (state.vSpeed * f).toFixed(decimals);
+        } else {
+          _cache.vertEl.style.display = 'none';
+        }
+      }
+      if (_cache.maxEl) _cache.maxEl.textContent = 'max ' + (state.maxSpeed * f).toFixed(decimals);
+      if (_cache.avgEl) {
+        if (!state.history.length) {
+          _cache.avgEl.textContent = 'avg 0.' + '0'.repeat(decimals);
+        } else {
+          let sum = 0;
+          for (let i = 0; i < state.history.length; i++) {
+            const h = state.history[i];
+            if (mode === 'vertical')      sum += h.v;
+            else if (mode === 'total')    sum += h.total;
+            else                          sum += h.h;
+          }
+          _cache.avgEl.textContent = 'avg ' + ((sum / state.history.length) * f).toFixed(decimals);
+        }
+      }
+      if (_cache.fillEl) {
+        const pct = Math.max(0, Math.min(100, (state.speed / barMax) * 100));
+        _cache.fillEl.style.width = pct + '%';
         let col;
         if (pct < 33) col = '#22c55e';
         else if (pct < 66) col = '#eab308';
