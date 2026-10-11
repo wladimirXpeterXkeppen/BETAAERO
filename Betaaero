@@ -2705,20 +2705,20 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
 
     const STYLE_PRESETS = {
       'default':   '',
-      'casual':    'Style: casual, friendly tone. Japanese: タメ口.',
-      'polite':    'Style: polite, respectful. Japanese: 敬語 (です・ます).',
-      'gamer':     'Style: hardcore gamer slang, hyped. Japanese: ゲーマー用語多め、テンション高め.',
-      'tsundere':  'Style: tsundere personality. Japanese: ツンデレ口調 (「〜だし」「別に…」).',
-      'kawaii':    'Style: cute/kawaii. Japanese: 可愛い口調 (「〜だよ♪」「〜なの」).',
-      'chuuni':    'Style: chuunibyou dramatic. Japanese: 「我が名は…」のような厨二口調.',
-      'butler':    'Style: butler tone. Japanese: 「〜でございます」「お嬢様/旦那様」.',
-      'kansai':    'Style: Kansai dialect. Japanese: 関西弁 (「〜やで」「〜やんか」).',
-      'kyoto':     'Style: Kyoto dialect. Japanese: 京都弁 (「〜どす」).',
-      'tohoku':    'Style: Tohoku dialect. Japanese: 東北弁 (「〜だべ」「〜っちゃ」).',
-      'cat':       'Style: Add "nya" at the end. Japanese: 「〜にゃ」「〜にゃん」.',
-      'robot':     'Style: robot tone. Japanese: 「〜デス」「〜マス」カタカナ多め.',
-      'pirate':    'Style: pirate. Japanese: 海賊口調.',
-      'yakuza':    'Style: yakuza. Japanese: 「〜やぞ」「〜やないか」.'
+      'casual':    'Tone: casual and friendly, like chatting with a friend.',
+      'polite':    'Tone: polite and respectful.',
+      'gamer':     'Tone: hardcore gamer, hyped, lots of game slang.',
+      'tsundere':  'Tone: tsundere personality — slightly sassy but caring.',
+      'kawaii':    'Tone: cute and kawaii.',
+      'chuuni':    'Tone: chuunibyou, dramatic and over-the-top.',
+      'butler':    'Tone: polite butler/maid, formal speech.',
+      'kansai':    'Tone: if target is Japanese, use Kansai dialect. Otherwise casual.',
+      'kyoto':     'Tone: if target is Japanese, use Kyoto dialect. Otherwise polite.',
+      'tohoku':    'Tone: if target is Japanese, use Tohoku dialect. Otherwise casual.',
+      'cat':       'Tone: add "nya" suffix. If target is Japanese, use 「〜にゃ」「〜にゃん」.',
+      'robot':     'Tone: robotic, mechanical, monotone.',
+      'pirate':    'Tone: pirate speak.',
+      'yakuza':    'Tone: tough guy / yakuza style.'
     };
 
     const DEFAULT_PROMPTS = {
