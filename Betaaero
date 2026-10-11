@@ -3244,7 +3244,19 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       let translated = original;
       try {
         const tl = pickTarget(original, cfg('inputMode', 'auto'));
-        const r = await translateText(original, tl, 'send');
+        // ★ 入力が既に target と同じ言語ならスキップ
+        const detected = detectLangLocal(original);
+        if (detected === tl) {
+          log('send skip (same lang):', original, '=', tl);
+          // そのまま送信
+        } else {
+          const r = await translateText(original, tl, 'send');
+          translated = r.text.replace(/\n+/g, ' ').trim();
+          log('send result:', translated, '(->', tl + ')');
+        }
+      } catch (err) {
+        console.error('[ChatTranslator] send failed:', err);
+      }
         translated = r.text.replace(/\n+/g, ' ').trim();
         log('send result:', translated, '(->', tl + ')');
       } catch (err) { console.error('[ChatTranslator] send failed:', err); }
