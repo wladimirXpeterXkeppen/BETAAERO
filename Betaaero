@@ -2863,7 +2863,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         body: JSON.stringify({
           messages: [
             { role: 'system', content: buildSystemPrompt(tl, direction) },
-            { role: 'user',   content: buildUserPrompt(text) }
+            { role: 'user',   content: buildUserPrompt(text, tl) }
           ],
           targetLang: LANG_NAMES[tl] || tl
         })
