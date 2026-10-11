@@ -2378,9 +2378,24 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       if (u === 'ms')  return 'm/s';
       return 'b/s';
     }
+    function _refreshCache(el) {
+      if (_cache.el === el) return;
+      _cache.el = el;
+      _cache.numEl    = el.querySelector('.spd-num');
+      _cache.unitEl   = el.querySelector('.spd-unit');
+      _cache.maxEl    = el.querySelector('.spd-max');
+      _cache.avgEl    = el.querySelector('.spd-avg');
+      _cache.fillEl   = el.querySelector('.spd-bar-fill');
+      _cache.vertEl   = el.querySelector('.spd-vert');
+      _cache.graphEl  = el.querySelector('.spd-graph');
+      _cache.graphColor = '';
+    }
+
     function updateHud() {
       const el = state.hudEl;
       if (!el) return;
+      _refreshCache(el);
+
       const theme    = Mods.gs('speedometer', 'theme', 'default');
       const mode     = Mods.gs('speedometer', 'mode', 'horizontal');
       const unit     = Mods.gs('speedometer', 'unit', 'bs');
@@ -2388,6 +2403,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       const barMax   = Mods.gs('speedometer', 'barMax', 15) || 15;
       const showGraph= Mods.gs('speedometer', 'showGraph', false);
       const f = unitFactor(unit);
+
       if (theme === 'rainbow') {
         state.rainbowHue = (state.rainbowHue + 1.2) % 360;
         const s = el.querySelector('.ac-spd');
@@ -2398,29 +2414,25 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           s.style.setProperty('--spd-unit-color', col);
           s.style.setProperty('--spd-extra-color', col);
           s.style.setProperty('--spd-graph-color', col);
+          _cache.graphColor = col;
         }
       }
-      const numEl  = el.querySelector('.spd-num');
-      const unitEl = el.querySelector('.spd-unit');
-      const maxEl  = el.querySelector('.spd-max');
-      const avgEl  = el.querySelector('.spd-avg');
-      const fillEl = el.querySelector('.spd-bar-fill');
-      const vertEl = el.querySelector('.spd-vert');
-      if (numEl)  numEl.textContent  = (state.speed * f).toFixed(decimals);
-      if (unitEl) unitEl.textContent = unitLabel(unit);
-      if (vertEl) {
+
+      if (_cache.numEl)  _cache.numEl.textContent  = (state.speed * f).toFixed(decimals);
+      if (_cache.unitEl) _cache.unitEl.textContent = unitLabel(unit);
+      if (_cache.vertEl) {
         if (mode === 'all') {
-          vertEl.style.display = '';
-          vertEl.textContent = 'H ' + (state.speed * f).toFixed(decimals) +
-                               '  V ' + (state.vSpeed * f).toFixed(decimals);
+          _cache.vertEl.style.display = '';
+          _cache.vertEl.textContent = 'H ' + (state.speed * f).toFixed(decimals) +
+                                      '  V ' + (state.vSpeed * f).toFixed(decimals);
         } else {
-          vertEl.style.display = 'none';
+          _cache.vertEl.style.display = 'none';
         }
       }
-      if (maxEl) maxEl.textContent = 'max ' + (state.maxSpeed * f).toFixed(decimals);
-      if (avgEl) {
+      if (_cache.maxEl) _cache.maxEl.textContent = 'max ' + (state.maxSpeed * f).toFixed(decimals);
+      if (_cache.avgEl) {
         if (!state.history.length) {
-          avgEl.textContent = 'avg 0.' + '0'.repeat(decimals);
+          _cache.avgEl.textContent = 'avg 0.' + '0'.repeat(decimals);
         } else {
           let sum = 0;
           for (let i = 0; i < state.history.length; i++) {
@@ -2429,30 +2441,40 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
             else if (mode === 'total')    sum += h.total;
             else                          sum += h.h;
           }
-          avgEl.textContent = 'avg ' + ((sum / state.history.length) * f).toFixed(decimals);
+          _cache.avgEl.textContent = 'avg ' + ((sum / state.history.length) * f).toFixed(decimals);
         }
       }
-      if (fillEl) {
+      if (_cache.fillEl) {
         const pct = Math.max(0, Math.min(100, (state.speed / barMax) * 100));
-        fillEl.style.width = pct + '%';
+        _cache.fillEl.style.width = pct + '%';
         let col;
         if (pct < 33) col = '#22c55e';
         else if (pct < 66) col = '#eab308';
         else col = '#ef4444';
-        fillEl.style.background = col;
+        _cache.fillEl.style.background = col;
       }
-      if (showGraph) {
-        const g = el.querySelector('.spd-graph');
-        if (g) {
-          const s2 = el.querySelector('.ac-spd');
-          const graphColor = theme === 'rainbow'
-            ? 'hsl(' + state.rainbowHue + ',100%,65%)'
-            : (getComputedStyle(s2).getPropertyValue('--spd-graph-color') || '#3b82f6').trim();
-          drawGraph(g, mode, graphColor);
+
+      if (showGraph && _cache.graphEl) {
+        const now = performance.now();
+        // ★ グラフは 10fps に制限
+        if (now - _cache.lastGraphUpdate >= 100) {
+          _cache.lastGraphUpdate = now;
+          let graphColor = _cache.graphColor;
+          if (!graphColor) {
+            if (theme === 'rainbow') {
+              graphColor = 'hsl(' + state.rainbowHue + ',100%,65%)';
+            } else {
+              const s2 = el.querySelector('.ac-spd');
+              graphColor = s2
+                ? (getComputedStyle(s2).getPropertyValue('--spd-graph-color') || '#3b82f6').trim()
+                : '#3b82f6';
+            }
+            _cache.graphColor = graphColor;
+          }
+          drawGraph(_cache.graphEl, mode, graphColor);
         }
       }
     }
-
     /* ---- CSS injection ---- */
     (function () {
       if (document.getElementById('ac-spd-style')) return;
