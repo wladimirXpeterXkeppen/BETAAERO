@@ -2147,6 +2147,8 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     }
 
     /* ---- Graph rendering ---- */
+    var _graphCtx = null;
+    var _graphCtxCanvas = null;
     function drawGraph(canvas, mode, graphColor) {
       if (!canvas) return;
       const w = canvas.clientWidth || 120;
@@ -2156,8 +2158,15 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
         canvas.width = Math.round(w * dpr);
         canvas.height = Math.round(h * dpr);
+        _graphCtxCanvas = null; // サイズ変更時はコンテキスト再取得
       }
-      const ctx = canvas.getContext('2d');
+      // ★ コンテキストをキャッシュ
+      if (_graphCtxCanvas !== canvas) {
+        _graphCtxCanvas = canvas;
+        _graphCtx = canvas.getContext('2d');
+      }
+      const ctx = _graphCtx;
+      if (!ctx) return;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
       const hist = state.history;
