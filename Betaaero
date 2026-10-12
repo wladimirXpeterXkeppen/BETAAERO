@@ -789,7 +789,12 @@
   const cssEl = document.createElement('style');
   cssEl.id = 'ac-style';
   cssEl.textContent = `
-  ...
+  .ac-hud-fps,.ac-hud-cps,.ac-hud-ping{background:rgba(30,30,30,0.55);border:none;border-radius:4px;height:26px;padding:0 10px;margin-left:6px;display:inline-flex;align-items:center;justify-content:center;font-family:'Rajdhani','Exo 2',sans-serif;gap:6px;vertical-align:middle;}
+  .ac-hud-fps .coord-symbol,.ac-hud-cps .coord-symbol,.ac-hud-ping .coord-symbol{color:#fff;font-size:13px;font-weight:700;letter-spacing:.06em;}
+  .ac-hud-fps .fps-value,.ac-hud-cps .cps-value,.ac-hud-ping .ping-value{color:#fff!important;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;font-family:'Rajdhani','Exo 2',sans-serif;}
+  .ac-hud-ping.good .ping-value{color:#7CFFB2!important;}
+  .ac-hud-ping.mid .ping-value{color:#FFD766!important;}
+  .ac-hud-ping.bad .ping-value{color:#FF6B7D!important;}
   html.ac-fx-1 *:not(:is(.ac-overlay,.ac-overlay *,.ac-modal-mask,.ac-modal-mask *,#ac-hud-root,#ac-hud-root *,#ac-editor,#ac-editor *,.items-manager,.items-manager *,.backpack,.backpack *,.pocket-wrapper,.pocket-wrapper *,.chest,.chest *,.backpack-items,.backpack-items *,.left-backpack-cont,.left-backpack-cont *,.hand-craft,.hand-craft *,.item,.item *,.item-wrapper,.item-wrapper *,.drag-item,.drag-item *,.dragging,.dragging *,.drag-layer,.drag-layer *,[class*="drag"],[class*="drag"] *)){animation-duration:.5s!important;transition-duration:.15s!important;}
   html.ac-fx-2 *:not(:is(.ac-overlay,.ac-overlay *,.ac-modal-mask,.ac-modal-mask *,#ac-hud-root,#ac-hud-root *,#ac-editor,#ac-editor *,.items-manager,.items-manager *,.backpack,.backpack *,.pocket-wrapper,.pocket-wrapper *,.chest,.chest *,.backpack-items,.backpack-items *,.left-backpack-cont,.left-backpack-cont *,.hand-craft,.hand-craft *,.item,.item *,.item-wrapper,.item-wrapper *,.drag-item,.drag-item *,.dragging,.dragging *,.drag-layer,.drag-layer *,[class*="drag"],[class*="drag"] *)){animation-duration:.01s!important;animation-iteration-count:1!important;transition-duration:.01s!important;}
   html.ac-fx-3 *:not(:is(.ac-overlay,.ac-overlay *,.ac-modal-mask,.ac-modal-mask *,#ac-hud-root,#ac-hud-root *,#ac-editor,#ac-editor *,.items-manager,.items-manager *,.backpack,.backpack *,.pocket-wrapper,.pocket-wrapper *,.chest,.chest *,.backpack-items,.backpack-items *,.left-backpack-cont,.left-backpack-cont *,.hand-craft,.hand-craft *,.item,.item *,.item-wrapper,.item-wrapper *,.drag-item,.drag-item *,.dragging,.dragging *,.drag-layer,.drag-layer *,[class*="drag"],[class*="drag"] *)){animation:none!important;transition:none!important;}
