@@ -222,6 +222,7 @@
   const Config = (() => {
     const K = 'ac.cfg.v29';
     let d = null, tm = null;
+    const _listeners = new Set();
     const base = () => ({ core: { accent: '#3b82f6', keybinds: { 'gui.open': 'ShiftRight' }, profile: 'Default' }, hud: {}, mods: {}, favs: {}, profiles: { Default: null } });
     function save() {
       try {
@@ -231,6 +232,9 @@
       } catch (e) {}
     }
     function sch() { clearTimeout(tm); tm = setTimeout(save, 600); }
+    function notify(p, v) {
+      _listeners.forEach(fn => { try { fn(p, v); } catch (e) { console.warn('[Config.onChange]', e); } });
+    }
     return {
       load() {
         let s = null;
@@ -246,14 +250,20 @@
         const ks = p.split('.'), l = ks.pop();
         let c = d;
         for (const k of ks) { if (!isObj(c[k])) c[k] = {}; c = c[k]; }
-        c[l] = v; sch(); return v;
+        const old = c[l];
+        c[l] = v; sch();
+        if (old !== v) notify(p, v);
+        return v;
+      },
+      onChange(fn) {
+        _listeners.add(fn);
+        return () => _listeners.delete(fn);
       },
       raw: () => d,
       reset() { d = base(); save(); },
       flush() { clearTimeout(tm); tm = null; save(); }
     };
   })();
-
   /* ===== Mods ===== */
   const Mods = (() => {
     const R = new Map(), O = [];
