@@ -5521,6 +5521,27 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         applyWorld(cfg);
       }
       st._applySlot = applySlot;
+
+      // ★ ここに変更2-Bを挿入
+      ['1', '2', '3'].forEach(function (n) {
+        const presetId = Mods.gs('atmosphere', 's' + n + '_preset', 'nightvision');
+        const preset = ATMO[presetId];
+        if (!preset) return;
+        if (typeof preset.brightness === 'number' &&
+            Mods.gs('atmosphere', 's' + n + '_brightness') === undefined) {
+          Mods.ss('atmosphere', 's' + n + '_brightness', preset.brightness);
+        }
+        if (typeof preset.contrast === 'number' &&
+            Mods.gs('atmosphere', 's' + n + '_contrast') === undefined) {
+          Mods.ss('atmosphere', 's' + n + '_contrast', preset.contrast);
+        }
+        if (typeof preset.saturation === 'number' &&
+            Mods.gs('atmosphere', 's' + n + '_saturation') === undefined) {
+          Mods.ss('atmosphere', 's' + n + '_saturation', preset.saturation);
+        }
+      });
+
+      function toast(m) { ... }
       function toast(m) {
         if (!Mods.gs('atmosphere', 'showToast', true)) return;
         let el = document.getElementById('ac-toast');
