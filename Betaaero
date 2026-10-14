@@ -5622,7 +5622,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
   });
   /* ===== MOD: Texture Pack (Celestar port) ===== */
   Mods.reg({
-    id: 'texturepack', name: 'Texture Pack', category: 'Visual', icon: 'svg:palette',
+    id: 'texturepack', name: 'Texture Pack', category: 'Visual', icon: 'svg:image',
     description: 'Replace in-game textures with custom packs (.txt format)',
     defaultEnabled: false,
     settings: [
