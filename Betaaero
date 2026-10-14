@@ -8,7 +8,7 @@
    - Keybinds: removed Debug entry
    (v32.2: Pixel Editor paint fix under themes, red center crosshair,
     smooth crosshair size slider, inline stats fix for FPS/CPS/PING)
-   (v32.1: Block Outline Celestar port, GUI Theme dropdown)
+   (v32.1: Block Outline , GUI Theme dropdown)
    (v31.2: TNO integrated, unique per-MOD icons)
    (v31.1: Toggle knob fix, HUD Editor arrow-key nudge)
    Storage: ac.cfg.v29 (+ .bak) | ac-plugins-db | ac-db
