@@ -5430,6 +5430,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
   });
 
   /* ===== MOD: Atmosphere ===== */
+  /* ===== MOD: Atmosphere ===== */
   const ATMO = {
     off:         { label: 'OFF',          ambient: null, fog: null,
                    brightness: 1.00, contrast: 1.00, saturation: 1.00 },
@@ -5472,6 +5473,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     init() {
       const st = this;
       st._styleEl = null; st._oA = null; st._oS = null; st._oF = null; st._lastCss = '';
+      st._unsubCfg = null;
       function ensure() {
         if (st._styleEl) return st._styleEl;
         st._styleEl = document.createElement('style');
@@ -5532,7 +5534,6 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       }
       st._applySlot = applySlot;
 
-      // ★ ここに変更2-Bを挿入
       ['1', '2', '3'].forEach(function (n) {
         const presetId = Mods.gs('atmosphere', 's' + n + '_preset', 'nightvision');
         const preset = ATMO[presetId];
@@ -5582,27 +5583,29 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       };
       window.addEventListener('keydown', st._onKD, true);
 
-      // ★ ここに変更2-Aを挿入
-      onCfgChange((key, value) => {
-        const m = key.match(/^atmosphere\.s([123])_preset$/);
+      // プリセット変更を検知してスライダーを自動更新
+      st._unsubCfg = Config.onChange((key, value) => {
+        const m = key.match(/mods\.atmosphere\.s([123])_preset$/);
         if (!m) return;
         const n = m[1];
         const preset = ATMO[value];
         if (!preset) return;
-        if (typeof preset.brightness === 'number') {
+        const curB = Mods.gs('atmosphere', 's' + n + '_brightness');
+        const curC = Mods.gs('atmosphere', 's' + n + '_contrast');
+        const curS = Mods.gs('atmosphere', 's' + n + '_saturation');
+        if (typeof preset.brightness === 'number' && curB !== preset.brightness) {
           Mods.ss('atmosphere', 's' + n + '_brightness', preset.brightness);
         }
-        if (typeof preset.contrast === 'number') {
+        if (typeof preset.contrast === 'number' && curC !== preset.contrast) {
           Mods.ss('atmosphere', 's' + n + '_contrast', preset.contrast);
         }
-        if (typeof preset.saturation === 'number') {
+        if (typeof preset.saturation === 'number' && curS !== preset.saturation) {
           Mods.ss('atmosphere', 's' + n + '_saturation', preset.saturation);
         }
         if (Mods.gs('atmosphere', 'currentSlot', 'off') === n) {
           applySlot(n);
         }
       });
-
     },
     apply(enabled, store) {
       const st = this;
@@ -5612,11 +5615,11 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     destroy() {
       const st = this;
       window.removeEventListener('keydown', st._onKD, true);
+      if (st._unsubCfg) { try { st._unsubCfg(); } catch (_) {} st._unsubCfg = null; }
       if (st._styleEl) st._styleEl.textContent = '';
       st._applySlot && st._applySlot('off');
     }
   });
-
   /* ===== MOD: Recorder ===== */
   Mods.reg({
     id: 'recorder', name: 'Screen Recorder', category: 'Visual', icon: 'svg:videoCam', description: 'Record screen with optional audio', defaultEnabled: false,
