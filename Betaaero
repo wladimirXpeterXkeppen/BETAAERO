@@ -5620,6 +5620,304 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       st._applySlot && st._applySlot('off');
     }
   });
+  /* ===== MOD: Texture Pack (Celestar port) ===== */
+  Mods.reg({
+    id: 'texturepack', name: 'Texture Pack', category: 'Visual', icon: 'svg:palette',
+    description: 'Replace in-game textures with custom packs (.txt format)',
+    defaultEnabled: false,
+    settings: [
+      { id: '__upload', type: 'button', label: 'Upload pack (.txt)',  buttonText: 'Upload File' },
+      { id: '__browse', type: 'button', label: 'Browse community packs', buttonText: 'Browse' },
+      { id: '__resetPack', type: 'button', label: 'Remove loaded pack', buttonText: 'Reset' }
+    ],
+    init() {
+      const st = this;
+      st._pack = {};
+      st._glPatched = new WeakSet();
+      st._scanId = null;
+      st._origSrcDesc = null;
+      st._origSetAttr = null;
+      st._origSetProp = null;
+      st._hooksInstalled = false;
+
+      /* ---- Toast helper ---- */
+      function toast(msg, color) {
+        let el = document.getElementById('ac-toast');
+        if (!el) {
+          el = ce('div'); el.id = 'ac-toast';
+          el.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483650;background:rgba(20,28,44,.97);border:1px solid rgba(59,130,246,.55);color:#fff;padding:10px 18px;border-radius:10px;font-family:Inter,sans-serif;font-size:13px;box-shadow:0 10px 40px rgba(0,0,0,.6);transition:opacity .25s;pointer-events:none;';
+          document.body.appendChild(el);
+        }
+        if (color) el.style.borderColor = color;
+        el.textContent = msg;
+        el.style.opacity = '1';
+        clearTimeout(el._h);
+        el._h = setTimeout(() => { el.style.opacity = '0'; }, 2200);
+      }
+      st._toast = toast;
+
+      /* ---- Pack helpers ---- */
+      st._loadPackFromConfig = () => {
+        const p = Config.get('mods.texturepack.pack', {});
+        st._pack = (p && typeof p === 'object' && !Array.isArray(p)) ? p : {};
+      };
+      st._packCount = () => Object.keys(st._pack).length;
+
+      st._parsePackText = (text) => {
+        const pack = {};
+        let count = 0;
+        for (const line of String(text).split('\n')) {
+          const idx = line.indexOf('>');
+          if (idx === -1) continue;
+          const k = line.slice(0, idx).trim();
+          const v = line.slice(idx + 1).trim();
+          if (k && v) { pack[k] = v; count++; }
+        }
+        return { pack, count };
+      };
+
+      st._setPack = (pack, sourceLabel) => {
+        Mods.ss('texturepack', 'pack', pack);
+        st._pack = pack;
+        const n = st._packCount();
+        toast('Texture pack: ' + n + ' entries' + (sourceLabel ? ' (' + sourceLabel + ')' : ''), '#22c55e');
+      };
+
+      /* ---- URL override ---- */
+      st._overrideURL = (url) => {
+        if (!Mods.on('texturepack') || !url || typeof url !== 'string') return url;
+        const pack = st._pack;
+        if (!pack) return url;
+        for (const key in pack) {
+          if (url.includes(key)) return pack[key];
+        }
+        return url;
+      };
+
+      /* ---- Install prototype hooks (once) ---- */
+      st._installHooks = () => {
+        if (st._hooksInstalled) return;
+        st._hooksInstalled = true;
+
+        // HTMLImageElement.src setter
+        try {
+          st._origSrcDesc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+          if (st._origSrcDesc && st._origSrcDesc.set) {
+            Object.defineProperty(HTMLImageElement.prototype, 'src', {
+              set(value) {
+                if (typeof value === 'string') {
+                  try { value = st._overrideURL(value); } catch (_) {}
+                }
+                return st._origSrcDesc.set.call(this, value);
+              },
+              get() { return st._origSrcDesc.get.call(this); },
+              configurable: true,
+              enumerable: st._origSrcDesc.enumerable
+            });
+          }
+        } catch (_) {}
+
+        // Element.setAttribute
+        try {
+          st._origSetAttr = Element.prototype.setAttribute;
+          Element.prototype.setAttribute = function (name, value) {
+            if (name === 'src' && typeof value === 'string') {
+              try { value = st._overrideURL(value); } catch (_) {}
+            }
+            return st._origSetAttr.call(this, name, value);
+          };
+        } catch (_) {}
+
+        // CSSStyleDeclaration.setProperty (url() values)
+        try {
+          st._origSetProp = CSSStyleDeclaration.prototype.setProperty;
+          CSSStyleDeclaration.prototype.setProperty = function (name, value, priority) {
+            if (typeof value === 'string' && value.includes('url(') && Mods.on('texturepack')) {
+              const pack = st._pack;
+              if (pack) {
+                for (const key in pack) {
+                  if (value.includes(key)) {
+                    value = 'url("' + pack[key] + '")';
+                    break;
+                  }
+                }
+              }
+            }
+            return st._origSetProp.call(this, name, value, priority);
+          };
+        } catch (_) {}
+      };
+
+      /* ---- WebGL texImage2D hook ---- */
+      st._patchGL = (gl) => {
+        if (!gl || st._glPatched.has(gl) || gl.__acTexPack_patched) return;
+        gl.__acTexPack_patched = true;
+        st._glPatched.add(gl);
+
+        try {
+          const origTex2D = gl.texImage2D.bind(gl);
+          gl.texImage2D = function (target, level, internalFormat, ...rest) {
+            try {
+              if (Mods.on('texturepack')) {
+                const pack = st._pack;
+                if (pack && Object.keys(pack).length > 0) {
+                  const source = rest[rest.length - 1];
+                  if (source && source instanceof HTMLImageElement && source.src) {
+                    const filename = source.src.split('/').pop().split('?')[0];
+                    const override = pack[filename];
+                    if (override && override !== source.src) {
+                      const img = new Image();
+                      img.crossOrigin = 'anonymous';
+                      img.onload = () => {
+                        try {
+                          origTex2D(target, level, internalFormat, ...rest.slice(0, rest.length - 1), img);
+                        } catch (_) {}
+                      };
+                      img.onerror = () => {};
+                      img.src = override;
+                      return;
+                    }
+                  }
+                }
+              }
+            } catch (_) {}
+            return origTex2D(target, level, internalFormat, ...rest);
+          };
+        } catch (_) {}
+      };
+
+      st._scanForGL = () => {
+        const cv = document.getElementById('game') || document.querySelector('canvas');
+        if (!cv) return;
+        let gl = null;
+        try { gl = cv.getContext('webgl2') || cv.getContext('webgl'); } catch (_) {}
+        if (gl && !gl.__acTexPack_patched) st._patchGL(gl);
+      };
+
+      /* ---- Browse modal ---- */
+      st._showBrowseModal = (packs) => {
+        const mask = ce('div', 'ac-modal-mask');
+        document.body.appendChild(mask);
+        const close = () => mask.remove();
+        mask.onclick = e => { if (e.target === mask) close(); };
+        const box = ce('div', 'ac-modal wide', mask);
+        const cb = ce('button', 'ac-modal-close', box);
+        cb.textContent = '✕';
+        cb.onclick = close;
+        const h = ce('h3', '', box);
+        h.textContent = 'Browse Texture Packs';
+        const sub = ce('div', 'sub', box);
+        sub.textContent = 'Community packs from celestarminefun.github.io';
+        const list = ce('div', '', box);
+        list.style.cssText = 'display:grid;grid-template-columns:repeat(2,1fr);gap:10px;max-height:65vh;overflow-y:auto;padding:2px;';
+
+        packs.forEach(p => {
+          const card = ce('div', '', list);
+          card.style.cssText = 'background:#232328;border:1px solid rgba(255,255,255,.06);border-radius:8px;overflow:hidden;display:flex;flex-direction:column;';
+
+          const preview = ce('div', '', card);
+          preview.style.cssText = 'height:100px;background:#0f0f11;overflow:hidden;display:flex;align-items:center;justify-content:center;';
+          if (p.preview) {
+            const img = ce('img', '', preview);
+            img.src = p.preview;
+            img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+            img.onerror = () => { img.remove(); };
+          }
+
+          const info = ce('div', '', card);
+          info.style.cssText = 'padding:10px;display:flex;flex-direction:column;gap:6px;';
+          const nameEl = ce('div', '', info);
+          nameEl.textContent = p.name || 'Unnamed';
+          nameEl.style.cssText = 'font-weight:600;color:#fff;font-size:13px;';
+          const byEl = ce('div', '', info);
+          byEl.textContent = 'by ' + (p.creator || 'unknown');
+          byEl.style.cssText = 'font-size:11px;color:#8a8d96;margin-bottom:6px;';
+
+          const btn = ce('button', 'ac-btn', info);
+          btn.textContent = 'Install';
+          btn.onclick = async () => {
+            btn.disabled = true;
+            btn.textContent = 'Installing...';
+            try {
+              const r = await fetch(p.file);
+              if (!r.ok) throw new Error('HTTP ' + r.status);
+              const text = await r.text();
+              const { pack, count } = st._parsePackText(text);
+              if (count === 0) { btn.textContent = 'No entries'; btn.disabled = false; return; }
+              st._setPack(pack, p.name || 'pack');
+              btn.textContent = 'Installed ✓';
+              setTimeout(close, 800);
+            } catch (err) {
+              btn.textContent = 'Failed';
+              btn.disabled = false;
+            }
+          };
+        });
+      };
+
+      /* ---- Button actions ---- */
+      st._btnActions = {
+        '__upload': () => {
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = '.txt,text/plain';
+          input.style.cssText = 'position:fixed;left:-9999px;top:-9999px;';
+          document.body.appendChild(input);
+          input.onchange = async (e) => {
+            try { input.remove(); } catch (_) {}
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+            const text = await file.text();
+            const { pack, count } = st._parsePackText(text);
+            if (count === 0) { toast('No valid entries found in file', '#ef4444'); return; }
+            st._setPack(pack, file.name);
+          };
+          input.click();
+        },
+        '__browse': async () => {
+          toast('Loading packs...', '#93c5fd');
+          try {
+            const res = await fetch('https://celestarminefun.github.io/client/texturepacks.json?t=' + Date.now());
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const packs = await res.json();
+            if (!Array.isArray(packs) || !packs.length) { toast('No packs available', '#ef4444'); return; }
+            st._showBrowseModal(packs);
+          } catch (e) {
+            toast('Failed: ' + e.message, '#ef4444');
+          }
+        },
+        '__resetPack': () => {
+          st._setPack({}, 'reset');
+        }
+      };
+
+      /* ---- Init ---- */
+      st._loadPackFromConfig();
+      st._installHooks();
+      st._scanForGL();
+      st._scanId = setInterval(st._scanForGL, 1000);
+
+      const n = st._packCount();
+      if (n > 0) toast('Texture pack: ' + n + ' entries', '#22c55e');
+    },
+    apply(enabled, store) {
+      const st = this;
+      st._loadPackFromConfig();
+      if (enabled) {
+        st._installHooks();
+        st._scanForGL();
+      }
+      // 無効時もフックは残すが、overrideURL / texImage2D 内で
+      // Mods.on('texturepack') をチェックしているため no-op になる
+    },
+    destroy() {
+      const st = this;
+      if (st._scanId) { clearInterval(st._scanId); st._scanId = null; }
+      // HTMLImageElement.src / setAttribute / CSSStyleDeclaration.setProperty
+      // のフックは他 MOD との兼ね合いを考えて解除しない（Celestar と同じ方針）
+      // WebGL の texImage2D も同様
+    }
+  });
   /* ===== MOD: Recorder ===== */
   Mods.reg({
     id: 'recorder', name: 'Screen Recorder', category: 'Visual', icon: 'svg:videoCam', description: 'Record screen with optional audio', defaultEnabled: false,
