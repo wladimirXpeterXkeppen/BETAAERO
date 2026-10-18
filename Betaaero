@@ -5919,29 +5919,26 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       // WebGL の texImage2D も同様
     }
   });
-  /* ===== MOD: Custom Sky (image + fog + starfield + clear color) ===== */
+  /* ===== MOD: Custom Sky (image + starfield + clear color + fog) ===== */
   Mods.reg({
     id: 'skybox',
     name: 'Custom Sky',
     category: 'Visual',
     icon: 'svg:sky',
-    description: 'Image / fog / CSS starfield / below-cloud color (auto-reloads every match)',
+    description: 'Image / starfield / below-cloud color / fog (auto-reloads every match)',
     defaultEnabled: false,
     settings: [
       // ---- Image ----
       { id: 'imageURL', type: 'text', label: 'Image URL (KTX2 replace)', default: 'https://i.postimg.cc/02KcC6MM/Minecraft-2025-04-12-21-48-38-min-bea680a9c.webp' },
       { id: 'autoReload', type: 'toggle', label: '  Reload on new match', default: true },
-
       // ---- Starfield ----
       { id: 'starfieldEnabled', type: 'toggle', label: 'CSS starfield', default: false },
       { id: 'starfieldBg', type: 'color', label: '  Star background', default: '#05050f' },
       { id: 'starfieldNebula', type: 'toggle', label: '  Nebula glow', default: true },
       { id: 'starfieldSpeed', type: 'slider', label: '  Star speed (s)', min: 20, max: 300, step: 10, default: 80 },
-
-      // ---- Below-cloud clear color ----
+      // ---- Below-cloud color (unrendered area) ----
       { id: 'clearColor', type: 'color', label: 'Sky color (below clouds)', default: '#000000' },
       { id: 'clearAlpha', type: 'slider', label: '  Sky opacity (0=transparent)', min: 0, max: 1, step: 0.05, default: 0 },
-
       // ---- Fog ----
       { id: 'fogEnabled', type: 'toggle', label: 'Fog override', default: false },
       { id: 'fogColor', type: 'color', label: '  Fog color', default: '#0a0520' },
@@ -5951,6 +5948,8 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     ],
     init() {
       const st = this;
+
+      // ---- state ----
       st._rafId = 0;
       st._running = false;
       st._lastTry = 0;
@@ -5973,15 +5972,23 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       st._origRender = null;
       st._currentClear = { colorNum: 0x000000, alpha: 0 };
 
-      /* ---- Read clear color ---- */
+      // ---- helpers ----
+      st._hexToNum = (hex, fallback) => {
+        const h = String(hex || '');
+        return /^#[0-9A-Fa-f]{6}$/.test(h) ? parseInt(h.slice(1), 16) : fallback;
+      };
+      st._hexSafe = (hex, fallback) => {
+        const h = String(hex || '');
+        return /^#[0-9A-Fa-f]{6}$/.test(h) ? h : fallback;
+      };
+
       st._readClear = () => {
-        const hex = String(Mods.gs('skybox', 'clearColor', '#000000'));
-        const colorNum = /^#[0-9A-Fa-f]{6}$/.test(hex) ? parseInt(hex.slice(1), 16) : 0x000000;
+        const colorNum = st._hexToNum(Mods.gs('skybox', 'clearColor', '#000000'), 0x000000);
         const alpha = Math.max(0, Math.min(1, Number(Mods.gs('skybox', 'clearAlpha', 0))));
         return { colorNum, alpha };
       };
 
-      /* ---- Image loading ---- */
+      // ---- Image load (canvas cache) ----
       st._loadImage = (url) => {
         if (!url) { st._cachedCanvas = null; st._cachedURL = ''; return Promise.resolve(null); }
         if (url === st._cachedURL && st._cachedCanvas) return Promise.resolve(st._cachedCanvas);
@@ -6012,8 +6019,8 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         return st._pendingPromise;
       };
 
-      /* ---- KTX2 texture replacement ---- */
-      st._tryApply = (canvas) => {
+      // ---- KTX2 texture replacement ----
+      st._tryApplyImage = (canvas) => {
         try {
           const gw = Game.world();
           if (!gw || !gw.threeScene || !gw.threeScene.scene) return false;
@@ -6054,10 +6061,10 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           if (skyMat) skyMat.needsUpdate = true;
           if (skyMesh) skyMesh.visible = true;
           return true;
-        } catch (e) { console.warn('[Skybox] apply failed:', e); return false; }
+        } catch (e) { console.warn('[Skybox] image apply failed:', e); return false; }
       };
 
-      /* ---- Fog ---- */
+      // ---- Fog ----
       st._applyFog = () => {
         if (!Mods.gs('skybox', 'fogEnabled', false)) return;
         try {
@@ -6066,6 +6073,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           const scene = gw.threeScene.scene;
           const renderer = gw.threeScene.renderer;
           if (!scene) return;
+
           if (st._fogWorld !== gw) {
             st._fogWorld = gw;
             st._origFog = scene.fog ? {
@@ -6085,11 +6093,12 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
               }
             } catch (_) {}
           }
-          const hex = String(Mods.gs('skybox', 'fogColor', '#0a0520'));
-          const colorNum = /^#[0-9A-Fa-f]{6}$/.test(hex) ? parseInt(hex.slice(1), 16) : 0x0a0520;
+
+          const colorNum = st._hexToNum(Mods.gs('skybox', 'fogColor', '#0a0520'), 0x0a0520);
           const near = Number(Mods.gs('skybox', 'fogNear', 20));
           const far = Number(Mods.gs('skybox', 'fogFar', 120));
           const applyBg = Mods.gs('skybox', 'fogApplyBackground', true) !== false;
+
           if (!scene.fog) {
             const FC = (window.THREE && window.THREE.Fog) || null;
             if (!FC) return;
@@ -6099,6 +6108,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           scene.fog.near = near;
           scene.fog.far = far;
           if (applyBg && renderer && renderer.setClearColor) {
+            // fog が背景にも効くよう、クリアカラーを fog 色で塗る（alpha=1）
             renderer.setClearColor(colorNum, 1);
           }
         } catch (_) {}
@@ -6124,16 +6134,15 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         st._origClear = null;
       };
 
-      /* ---- Starfield CSS ---- */
+      // ---- CSS (canvas 透明化 + body/背景色 + optional starfield) ----
       st._buildCSS = () => {
+        const skyHex = st._hexSafe(Mods.gs('skybox', 'clearColor', '#000000'), '#000000');
         const starsOn = Mods.gs('skybox', 'starfieldEnabled', false) === true;
-        const skyHex = String(Mods.gs('skybox', 'clearColor', '#000000'));
-        const skySafe = /^#[0-9A-Fa-f]{6}$/.test(skyHex) ? skyHex : '#000000';
 
-        // ★ starfield OFF でも必ず「canvas透明化 + 背景色」を返す
+        // ★ starfield OFF でも必ずこの base を返す（canvas の青を消すため）
         const base = `
-          html, body { background: ${skySafe} !important; }
-          #app, #app > div, #app > div > div { background: ${skySafe} !important; }
+          html, body { background: ${skyHex} !important; }
+          #app, #app > div, #app > div > div { background: ${skyHex} !important; }
           canvas#game, #game, canvas.game-canvas, canvas[data-engine], #app canvas {
             background: transparent !important;
             background-image: none !important;
@@ -6143,8 +6152,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
 
         if (!starsOn) return base;
 
-        const bg = String(Mods.gs('skybox', 'starfieldBg', '#05050f'));
-        const bgSafe = /^#[0-9A-Fa-f]{6}$/.test(bg) ? bg : '#05050f';
+        const bgSafe = st._hexSafe(Mods.gs('skybox', 'starfieldBg', '#05050f'), '#05050f');
         const nebula = Mods.gs('skybox', 'starfieldNebula', true) !== false;
         const speed = Number(Mods.gs('skybox', 'starfieldSpeed', 80)) || 80;
         const nebulaCSS = nebula
@@ -6187,7 +6195,48 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         `;
       };
 
-      /* ---- WebGL clear color (below-cloud) ---- */
+      st._ensureStyle = () => {
+        const css = st._buildCSS();
+        if (!css) return;
+        if (st._styleEl && st._styleEl.isConnected) {
+          if (st._styleEl.textContent !== css) st._styleEl.textContent = css;
+          return;
+        }
+        st._styleEl = document.createElement('style');
+        st._styleEl.id = 'ac-starsky-style';
+        st._styleEl.textContent = css;
+        document.head.appendChild(st._styleEl);
+      };
+
+      st._removeStyle = () => {
+        if (st._styleEl) { try { st._styleEl.remove(); } catch (_) {} st._styleEl = null; }
+      };
+
+      // ---- Force inline (canvas 透明 + body/html/app 背景色) ----
+      st._forceInline = () => {
+        try {
+          const skyHex = st._hexSafe(Mods.gs('skybox', 'clearColor', '#000000'), '#000000');
+          const cv = document.getElementById('game') || document.querySelector('canvas');
+          if (cv) {
+            if (cv.style.getPropertyValue('background-image') !== 'none')
+              cv.style.setProperty('background-image', 'none', 'important');
+            if (cv.style.getPropertyValue('background-color') !== 'transparent')
+              cv.style.setProperty('background-color', 'transparent', 'important');
+            if (cv.style.getPropertyValue('background') !== 'transparent')
+              cv.style.setProperty('background', 'transparent', 'important');
+          }
+          const html = document.documentElement;
+          if (html.style.getPropertyValue('background') !== skyHex)
+            html.style.setProperty('background', skyHex, 'important');
+          if (document.body.style.getPropertyValue('background') !== skyHex)
+            document.body.style.setProperty('background', skyHex, 'important');
+          const app = document.getElementById('app');
+          if (app && app.style.getPropertyValue('background') !== skyHex)
+            app.style.setProperty('background', skyHex, 'important');
+        } catch (_) {}
+      };
+
+      // ---- WebGL clear color (below-cloud) ----
       st._applyClearNow = () => {
         try {
           const gw = Game.world();
@@ -6238,14 +6287,18 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         st._origRender = null;
       };
 
-      /* ---- Loop ---- */
+      // ---- Loop ----
       st._loop = () => {
         if (!Mods.on('skybox')) { st._rafId = 0; st._running = false; return; }
         st._rafId = requestAnimationFrame(st._loop);
 
+        // 毎フレーム: CSS 存在保証 + canvas インライン強制 + clearColor 維持
+        st._ensureStyle();
+        st._forceInline();
         st._applyFog();
         st._hookRenderer();
 
+        // 画像適用（URL / ワールド変化時のみ）
         if (st._loading) return;
         const url = Mods.gs('skybox', 'imageURL', '');
         if (!url) return;
@@ -6269,7 +6322,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         st._loadImage(url).then((canvas) => {
           st._loading = false;
           if (!canvas) return;
-          if (st._tryApply(canvas)) {
+          if (st._tryApplyImage(canvas)) {
             const curGW = Game.world();
             if (!curGW) return;
             st._appliedGW = curGW;
@@ -6293,16 +6346,20 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       };
 
       st._currentClear = st._readClear();
+      st._ensureStyle();
+      st._forceInline();
       st._start();
     },
     apply(enabled, store) {
       const st = this;
       st._currentClear = st._readClear();
+
       if (enabled) {
-        // CSS (starfield) 更新
-        // starfield の有無に関わらず CSS を常に適用（canvas 透明化のため）
-        if (st._ensureStyle) st._ensureStyle();
-        // Fog 復元チェック
+        // CSS は starfield の有無に関わらず必ず適用（canvas の青を消す）
+        st._ensureStyle && st._ensureStyle();
+        st._forceInline && st._forceInline();
+
+        // Fog
         if (store && store.fogEnabled === false) {
           st._restoreFog && st._restoreFog();
         } else {
@@ -6316,12 +6373,19 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         st._removeStyle && st._removeStyle();
         st._restoreRenderer && st._restoreRenderer();
         st._restoreFog && st._restoreFog();
-        // クリアカラーも元に戻す
+
+        // インライン強制分を解除
         try {
-          const gw = Game.world();
-          if (gw && gw.threeScene && gw.threeScene.renderer && st._origClear) {
-            gw.threeScene.renderer.setClearColor(st._origClear.hex, st._origClear.alpha);
+          const cv = document.getElementById('game') || document.querySelector('canvas');
+          if (cv) {
+            cv.style.removeProperty('background-image');
+            cv.style.removeProperty('background-color');
+            cv.style.removeProperty('background');
           }
+          document.documentElement.style.removeProperty('background');
+          document.body.style.removeProperty('background');
+          const app = document.getElementById('app');
+          if (app) app.style.removeProperty('background');
         } catch (_) {}
       }
     },
@@ -6331,8 +6395,21 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       st._removeStyle && st._removeStyle();
       st._restoreRenderer && st._restoreRenderer();
       st._restoreFog && st._restoreFog();
+      try {
+        const cv = document.getElementById('game') || document.querySelector('canvas');
+        if (cv) {
+          cv.style.removeProperty('background-image');
+          cv.style.removeProperty('background-color');
+          cv.style.removeProperty('background');
+        }
+        document.documentElement.style.removeProperty('background');
+        document.body.style.removeProperty('background');
+        const app = document.getElementById('app');
+        if (app) app.style.removeProperty('background');
+      } catch (_) {}
     }
   });
+
   /* ===== MOD: Recorder ===== */
   Mods.reg({
     id: 'recorder', name: 'Screen Recorder', category: 'Visual', icon: 'svg:videoCam', description: 'Record screen with optional audio', defaultEnabled: false,
