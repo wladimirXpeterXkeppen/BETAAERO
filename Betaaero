@@ -5919,269 +5919,192 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       // WebGL の texImage2D も同様
     }
   });
-  /* ===== MOD: Custom Sky + Fog ===== */
+  /* ===== MOD: Star Sky (CSS starfield + WebGL clear color) ===== */
   Mods.reg({
-    id: 'skybox',
-    name: 'Custom Sky',
+    id: 'starsky',
+    name: 'Star Sky',
     category: 'Visual',
-    icon: 'svg:sky',
-    description: 'Replace skybox texture & fog (auto-reloads every match)',
+    icon: 'svg:stars',
+    description: 'CSS starfield + adjustable WebGL sky color (below clouds)',
     defaultEnabled: false,
     settings: [
-      { id: 'imageURL', type: 'text', label: 'Image URL', default: 'https://i.postimg.cc/02KcC6MM/Minecraft-2025-04-12-21-48-38-min-bea680a9c.webp' },
-      { id: 'autoReload', type: 'toggle', label: 'Reload on new match', default: true },
-      { id: 'fogEnabled', type: 'toggle', label: 'Enable fog override', default: false },
-      { id: 'fogColor', type: 'color', label: '  Fog color', default: '#0a0520' },
-      { id: 'fogNear', type: 'slider', label: '  Fog near', min: 0, max: 500, step: 1, default: 20 },
-      { id: 'fogFar', type: 'slider', label: '  Fog far', min: 10, max: 2000, step: 1, default: 120 },
-      { id: 'fogApplyBackground', type: 'toggle', label: '  Apply to background', default: true }
+      { id: 'webglColor', type: 'color', label: 'Sky color (below clouds)', default: '#000000' },
+      { id: 'webglAlpha', type: 'slider', label: '  Sky opacity (0=transparent)', min: 0, max: 1, step: 0.05, default: 0 },
+      { id: 'starsEnabled', type: 'toggle', label: 'Show starfield', default: true },
+      { id: 'bgColor', type: 'color', label: '  Star background', default: '#05050f' },
+      { id: 'nebulaOn', type: 'toggle', label: '  Nebula glow', default: true },
+      { id: 'starSpeed', type: 'slider', label: '  Star speed (s)', min: 20, max: 300, step: 10, default: 80 }
     ],
     init() {
       const st = this;
-      st._rafId = 0;
-      st._running = false;
-      st._lastTry = 0;
-      st._appliedGW = null;
-      st._appliedEpoch = -1;
-      st._appliedSceneUUID = null;
-      st._appliedURL = '';
-      st._cachedCanvas = null;
-      st._cachedURL = '';
-      st._pendingURL = null;
-      st._pendingPromise = null;
-      st._loading = false;
+      st._styleEl = null;
+      st._timerId = 0;
+      st._hookedRenderer = null;
+      st._origRender = null;
+      st._currentClear = { colorNum: 0x000000, alpha: 0 };
 
-      // fog state
-      st._fogWorld = null;
-      st._origFog = null;
-      st._origClear = null;
-
-      /* ---- Image loading (canvas cache) ---- */
-      st._loadImage = (url) => {
-        if (!url) { st._cachedCanvas = null; st._cachedURL = ''; return Promise.resolve(null); }
-        if (url === st._cachedURL && st._cachedCanvas) return Promise.resolve(st._cachedCanvas);
-        if (st._pendingURL === url && st._pendingPromise) return st._pendingPromise;
-        st._pendingURL = url;
-        st._pendingPromise = new Promise((resolve) => {
-          const img = new Image();
-          img.crossOrigin = 'anonymous';
-          img.onload = () => {
-            if (st._pendingURL === url) { st._pendingURL = null; st._pendingPromise = null; }
-            try {
-              const canvas = document.createElement('canvas');
-              canvas.width = img.width;
-              canvas.height = img.height;
-              canvas.getContext('2d').drawImage(img, 0, 0);
-              st._cachedCanvas = canvas;
-              st._cachedURL = url;
-              resolve(canvas);
-            } catch (e) { console.warn('[Skybox] canvas failed (CORS?):', e); resolve(null); }
-          };
-          img.onerror = () => {
-            if (st._pendingURL === url) { st._pendingURL = null; st._pendingPromise = null; }
-            console.warn('[Skybox] image load failed:', url);
-            resolve(null);
-          };
-          img.src = url;
-        });
-        return st._pendingPromise;
+      /* ---- Read current clear settings ---- */
+      st._readClear = () => {
+        const hex = String(Mods.gs('starsky', 'webglColor', '#000000'));
+        const colorNum = /^#[0-9A-Fa-f]{6}$/.test(hex) ? parseInt(hex.slice(1), 16) : 0x000000;
+        const alpha = Math.max(0, Math.min(1, Number(Mods.gs('starsky', 'webglAlpha', 0))));
+        return { colorNum, alpha };
       };
 
-      /* ---- KTX2 texture replacement ---- */
-      st._tryApply = (canvas) => {
-        try {
-          const gw = Game.world();
-          if (!gw || !gw.threeScene || !gw.threeScene.scene) return false;
-          const scene = gw.threeScene.scene;
-          let skyTex = null, skyMesh = null, skyMat = null;
-          scene.traverse((obj) => {
-            if (!obj.isMesh || skyTex) return;
-            const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-            mats.forEach((mat) => {
-              if (!mat || skyTex) return;
-              ['map', 'envMap', 'alphaMap'].forEach((slot) => {
-                const tex = mat[slot];
-                if (!tex) return;
-                if (tex.isCompressedTexture || tex.constructor?.name?.includes('Compressed')) {
-                  skyTex = tex; skyMesh = obj; skyMat = mat;
-                }
-              });
-            });
-          });
-          if (!skyTex) return false;
-          try {
-            Object.defineProperty(skyTex, 'image', { value: canvas, writable: true, configurable: true });
-          } catch (_) {
-            try { skyTex.image = canvas; } catch (_) {}
-          }
-          skyTex.isCompressedTexture = false;
-          skyTex.format = 1023;
-          skyTex.type = 1009;
-          skyTex.mipmaps = [];
-          skyTex.generateMipmaps = false;
-          skyTex.needsUpdate = true;
-          skyTex.flipY = true;
-          if (skyMat && skyMat.uniforms) {
-            for (const key in skyMat.uniforms) {
-              if (skyMat.uniforms[key].value === skyTex) skyMat.uniforms[key].value = skyTex;
+      /* ---- CSS build ---- */
+      st._buildCSS = () => {
+        const bg = String(Mods.gs('starsky', 'bgColor', '#05050f'));
+        const bgSafe = /^#[0-9A-Fa-f]{6}$/.test(bg) ? bg : '#05050f';
+        const nebula = Mods.gs('starsky', 'nebulaOn', true) !== false;
+        const speed = Number(Mods.gs('starsky', 'starSpeed', 80)) || 80;
+        const starsOn = Mods.gs('starsky', 'starsEnabled', true) !== false;
+
+        const nebulaCSS = nebula
+          ? 'radial-gradient(circle at 80% 20%, rgba(120, 80, 255, 0.4) 0%, transparent 55%),' +
+            'radial-gradient(circle at 20% 80%, rgba(255, 80, 200, 0.3) 0%, transparent 60%)'
+          : 'none';
+
+        const starCSS = starsOn
+          ? `
+            body::before {
+              content: "";
+              position: fixed;
+              inset: 0;
+              z-index: -1;
+              background-color: ${bgSafe};
+              background-image:
+                radial-gradient(1.5px 1.5px at 20px 30px, #fff, transparent),
+                radial-gradient(1px 1px at 50px 80px, #ddd, transparent),
+                radial-gradient(2px 2px at 110px 40px, #fff, transparent),
+                radial-gradient(1px 1px at 160px 120px, #ccc, transparent),
+                radial-gradient(1.5px 1.5px at 220px 90px, #fff, transparent),
+                radial-gradient(1px 1px at 280px 180px, #ddd, transparent),
+                radial-gradient(2px 2px at 340px 60px, #fff, transparent),
+                radial-gradient(1px 1px at 400px 150px, #ccc, transparent);
+              background-size: 450px 250px;
+              animation: __ac_stars_scroll ${speed}s linear infinite;
             }
-          }
-          if (skyMat) skyMat.needsUpdate = true;
-          if (skyMesh) skyMesh.visible = true;
-          return true;
-        } catch (e) { console.warn('[Skybox] apply failed:', e); return false; }
+            body::after {
+              content: "";
+              position: fixed;
+              inset: 0;
+              z-index: -1;
+              pointer-events: none;
+              background: ${nebulaCSS};
+              display: ${nebula ? 'block' : 'none'};
+            }
+            @keyframes __ac_stars_scroll {
+              from { background-position: 0 0; }
+              to   { background-position: -450px 0; }
+            }
+          `
+          : `
+            body::before, body::after { display: none !important; }
+            html, body { background: ${bgSafe} !important; }
+          `;
+
+        return `
+          canvas#game { background: transparent !important; }
+          html, body { background: ${bgSafe} !important; }
+          ${starCSS}
+        `;
       };
 
-      /* ---- Fog apply (called every frame, cheap if disabled) ---- */
-      st._applyFog = () => {
-        if (!Mods.gs('skybox', 'fogEnabled', false)) return;
+      st._ensureStyle = () => {
+        if (st._styleEl && st._styleEl.isConnected) {
+          st._styleEl.textContent = st._buildCSS();
+          return;
+        }
+        st._styleEl = document.createElement('style');
+        st._styleEl.id = 'ac-starsky-style';
+        st._styleEl.textContent = st._buildCSS();
+        document.head.appendChild(st._styleEl);
+      };
+
+      st._removeStyle = () => {
+        if (st._styleEl) { try { st._styleEl.remove(); } catch (_) {} st._styleEl = null; }
+      };
+
+      /* ---- WebGL clear color hook ---- */
+      st._hookRenderer = () => {
         try {
           const gw = Game.world();
           if (!gw || !gw.threeScene) return;
           const scene = gw.threeScene.scene;
           const renderer = gw.threeScene.renderer;
-          if (!scene) return;
+          if (!renderer || !scene) return;
 
-          // 新しいワールドに入ったら元の状態を保存
-          if (st._fogWorld !== gw) {
-            st._fogWorld = gw;
-            st._origFog = scene.fog ? {
-              color: scene.fog.color.getHex(),
-              near: scene.fog.near,
-              far: scene.fog.far
-            } : null;
-            st._origClear = null;
+          const c = st._currentClear;
+          if (renderer.setClearColor) renderer.setClearColor(c.colorNum, c.alpha);
+          if (scene.background) scene.background = null;
+
+          if (st._hookedRenderer === renderer) return;
+          // 既存フック解除
+          if (st._hookedRenderer && st._origRender) {
+            try { st._hookedRenderer.render = st._origRender; } catch (_) {}
+          }
+          st._hookedRenderer = renderer;
+          st._origRender = renderer.render.bind(renderer);
+          renderer.render = function (s, cam) {
             try {
-              if (renderer && renderer.getClearColor && renderer.getClearAlpha) {
-                const tmp = { r: 0, g: 0, b: 0 };
-                renderer.getClearColor(tmp);
-                st._origClear = {
-                  hex: (Math.round(tmp.r * 255) << 16) | (Math.round(tmp.g * 255) << 8) | Math.round(tmp.b * 255),
-                  alpha: renderer.getClearAlpha()
-                };
-              }
+              if (s && s.background) s.background = null;
+              const cc = st._currentClear;
+              if (renderer.setClearColor) renderer.setClearColor(cc.colorNum, cc.alpha);
             } catch (_) {}
-          }
-
-          const hex = String(Mods.gs('skybox', 'fogColor', '#0a0520'));
-          const colorNum = /^#[0-9A-Fa-f]{6}$/.test(hex) ? parseInt(hex.slice(1), 16) : 0x0a0520;
-          const near = Number(Mods.gs('skybox', 'fogNear', 20));
-          const far = Number(Mods.gs('skybox', 'fogFar', 120));
-          const applyBg = Mods.gs('skybox', 'fogApplyBackground', true) !== false;
-
-          if (!scene.fog) {
-            const FC = (window.THREE && window.THREE.Fog) || null;
-            if (!FC) return;
-            scene.fog = new FC(colorNum, near, far);
-          }
-
-          scene.fog.color.setHex(colorNum);
-          scene.fog.near = near;
-          scene.fog.far = far;
-
-          if (applyBg && renderer && renderer.setClearColor) {
-            renderer.setClearColor(colorNum, 1);
-          }
+            return st._origRender(s, cam);
+          };
         } catch (_) {}
       };
 
-      /* ---- Fog restore (when disabled) ---- */
-      st._restoreFog = () => {
+      st._restoreRenderer = () => {
         try {
-          const gw = Game.world();
-          if (!gw || !gw.threeScene) return;
-          const scene = gw.threeScene.scene;
-          const renderer = gw.threeScene.renderer;
-          if (st._origFog && scene && scene.fog) {
-            scene.fog.color.setHex(st._origFog.color);
-            scene.fog.near = st._origFog.near;
-            scene.fog.far = st._origFog.far;
-          }
-          if (st._origClear && renderer && renderer.setClearColor) {
-            renderer.setClearColor(st._origClear.hex, st._origClear.alpha);
+          if (st._hookedRenderer && st._origRender) {
+            st._hookedRenderer.render = st._origRender;
           }
         } catch (_) {}
-        st._fogWorld = null;
-        st._origFog = null;
-        st._origClear = null;
+        st._hookedRenderer = null;
+        st._origRender = null;
       };
 
-      /* ---- Main loop ---- */
-      st._loop = () => {
-        if (!Mods.on('skybox')) { st._rafId = 0; st._running = false; return; }
-        st._rafId = requestAnimationFrame(st._loop);
-
-        // fog は毎フレーム強制上書き（ゲームに戻されないように）
-        st._applyFog();
-
-        // skybox は URL / epoch 変化時のみ
-        if (st._loading) return;
-        const url = Mods.gs('skybox', 'imageURL', '');
-        if (!url) return;
-        const gw = Game.world();
-        if (!gw) { st._appliedGW = null; return; }
-        const scene = gw.threeScene && gw.threeScene.scene;
-        const sceneUUID = scene ? scene.uuid : null;
-        const epoch = Game.epoch;
-        const autoReload = Mods.gs('skybox', 'autoReload', true);
-        const urlChanged = url !== st._appliedURL;
-        const epochChanged = epoch !== st._appliedEpoch;
-        const gwChanged = gw !== st._appliedGW;
-        const sceneChanged = sceneUUID !== st._appliedSceneUUID;
-        const needApply = urlChanged || st._appliedURL === '' ||
-          (autoReload && (epochChanged || gwChanged || sceneChanged));
-        if (!needApply) return;
-        const now = performance.now();
-        if (now - st._lastTry < 100) return;
-        st._lastTry = now;
-        st._loading = true;
-        st._loadImage(url).then((canvas) => {
-          st._loading = false;
-          if (!canvas) return;
-          if (st._tryApply(canvas)) {
-            const curGW = Game.world();
-            if (!curGW) return;
-            st._appliedGW = curGW;
-            st._appliedEpoch = Game.epoch;
-            st._appliedURL = url;
-            if (curGW.threeScene && curGW.threeScene.scene) st._appliedSceneUUID = curGW.threeScene.scene.uuid;
-            console.log('[Skybox] applied (epoch ' + Game.epoch + ')');
-          }
-        });
+      st._tick = () => {
+        if (!Mods.on('starsky')) {
+          if (st._timerId) { clearInterval(st._timerId); st._timerId = 0; }
+          return;
+        }
+        st._hookRenderer();
       };
 
       st._start = () => {
-        if (st._running) return;
-        st._running = true;
-        st._lastTry = 0;
-        st._rafId = requestAnimationFrame(st._loop);
+        st._ensureStyle();
+        st._hookRenderer();
+        if (!st._timerId) st._timerId = setInterval(st._tick, 100);
       };
       st._stop = () => {
-        if (st._rafId) { cancelAnimationFrame(st._rafId); st._rafId = 0; }
-        st._running = false;
+        if (st._timerId) { clearInterval(st._timerId); st._timerId = 0; }
+        st._removeStyle();
+        st._restoreRenderer();
       };
-
-      st._start();
     },
-    apply(enabled, store) {
+    apply(enabled) {
       const st = this;
-      if (enabled) {
-        // fog 設定が変わったら復元情報をリセットして再適用
-        if (store && store.fogEnabled === false) {
-          st._restoreFog && st._restoreFog();
-        } else {
-          st._applyFog && st._applyFog();
+      // 設定変更を即時反映
+      st._currentClear = st._readClear();
+      try {
+        const gw = Game.world();
+        if (gw && gw.threeScene && gw.threeScene.renderer) {
+          const r = gw.threeScene.renderer;
+          if (r.setClearColor) r.setClearColor(st._currentClear.colorNum, st._currentClear.alpha);
         }
-        st._start && st._start();
-      } else {
-        st._stop && st._stop();
-        st._restoreFog && st._restoreFog();
+      } catch (_) {}
+      if (st._styleEl && st._styleEl.isConnected) {
+        st._styleEl.textContent = st._buildCSS();
       }
+      if (enabled) st._start && st._start();
+      else st._stop && st._stop();
     },
     destroy() {
       const st = this;
       st._stop && st._stop();
-      st._restoreFog && st._restoreFog();
     }
   });
   /* ===== MOD: Recorder ===== */
