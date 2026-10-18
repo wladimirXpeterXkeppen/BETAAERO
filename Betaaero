@@ -6130,11 +6130,15 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         const skyHex = String(Mods.gs('skybox', 'clearColor', '#000000'));
         const skySafe = /^#[0-9A-Fa-f]{6}$/.test(skyHex) ? skyHex : '#000000';
 
-        // 常に canvas を透明化 + body 背景を Sky color に
-        // （描画されていない領域 ＝ canvas の CSS 背景が Sky color になる）
+        // ★ starfield OFF でも必ず「canvas透明化 + 背景色」を返す
         const base = `
-          canvas#game { background: transparent !important; }
           html, body { background: ${skySafe} !important; }
+          #app, #app > div, #app > div > div { background: ${skySafe} !important; }
+          canvas#game, #game, canvas.game-canvas, canvas[data-engine], #app canvas {
+            background: transparent !important;
+            background-image: none !important;
+            background-color: transparent !important;
+          }
         `;
 
         if (!starsOn) return base;
