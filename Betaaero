@@ -5919,17 +5919,22 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       // WebGL の texImage2D も同様
     }
   });
-  /* ===== MOD: Custom Sky (KTX2 texture replacement) ===== */
+  /* ===== MOD: Custom Sky + Fog ===== */
   Mods.reg({
     id: 'skybox',
     name: 'Custom Sky',
     category: 'Visual',
     icon: 'svg:sky',
-    description: 'Replace the skybox texture with a custom image (auto-reloads every match)',
+    description: 'Replace skybox texture & fog (auto-reloads every match)',
     defaultEnabled: false,
     settings: [
       { id: 'imageURL', type: 'text', label: 'Image URL', default: 'https://i.postimg.cc/02KcC6MM/Minecraft-2025-04-12-21-48-38-min-bea680a9c.webp' },
-      { id: 'autoReload', type: 'toggle', label: 'Reload on new match', default: true }
+      { id: 'autoReload', type: 'toggle', label: 'Reload on new match', default: true },
+      { id: 'fogEnabled', type: 'toggle', label: 'Enable fog override', default: false },
+      { id: 'fogColor', type: 'color', label: '  Fog color', default: '#0a0520' },
+      { id: 'fogNear', type: 'slider', label: '  Fog near', min: 0, max: 500, step: 1, default: 20 },
+      { id: 'fogFar', type: 'slider', label: '  Fog far', min: 10, max: 2000, step: 1, default: 120 },
+      { id: 'fogApplyBackground', type: 'toggle', label: '  Apply to background', default: true }
     ],
     init() {
       const st = this;
@@ -5946,6 +5951,12 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       st._pendingPromise = null;
       st._loading = false;
 
+      // fog state
+      st._fogWorld = null;
+      st._origFog = null;
+      st._origClear = null;
+
+      /* ---- Image loading (canvas cache) ---- */
       st._loadImage = (url) => {
         if (!url) { st._cachedCanvas = null; st._cachedURL = ''; return Promise.resolve(null); }
         if (url === st._cachedURL && st._cachedCanvas) return Promise.resolve(st._cachedCanvas);
@@ -5976,6 +5987,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         return st._pendingPromise;
       };
 
+      /* ---- KTX2 texture replacement ---- */
       st._tryApply = (canvas) => {
         try {
           const gw = Game.world();
@@ -6020,9 +6032,89 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         } catch (e) { console.warn('[Skybox] apply failed:', e); return false; }
       };
 
+      /* ---- Fog apply (called every frame, cheap if disabled) ---- */
+      st._applyFog = () => {
+        if (!Mods.gs('skybox', 'fogEnabled', false)) return;
+        try {
+          const gw = Game.world();
+          if (!gw || !gw.threeScene) return;
+          const scene = gw.threeScene.scene;
+          const renderer = gw.threeScene.renderer;
+          if (!scene) return;
+
+          // 新しいワールドに入ったら元の状態を保存
+          if (st._fogWorld !== gw) {
+            st._fogWorld = gw;
+            st._origFog = scene.fog ? {
+              color: scene.fog.color.getHex(),
+              near: scene.fog.near,
+              far: scene.fog.far
+            } : null;
+            st._origClear = null;
+            try {
+              if (renderer && renderer.getClearColor && renderer.getClearAlpha) {
+                const tmp = { r: 0, g: 0, b: 0 };
+                renderer.getClearColor(tmp);
+                st._origClear = {
+                  hex: (Math.round(tmp.r * 255) << 16) | (Math.round(tmp.g * 255) << 8) | Math.round(tmp.b * 255),
+                  alpha: renderer.getClearAlpha()
+                };
+              }
+            } catch (_) {}
+          }
+
+          const hex = String(Mods.gs('skybox', 'fogColor', '#0a0520'));
+          const colorNum = /^#[0-9A-Fa-f]{6}$/.test(hex) ? parseInt(hex.slice(1), 16) : 0x0a0520;
+          const near = Number(Mods.gs('skybox', 'fogNear', 20));
+          const far = Number(Mods.gs('skybox', 'fogFar', 120));
+          const applyBg = Mods.gs('skybox', 'fogApplyBackground', true) !== false;
+
+          if (!scene.fog) {
+            const FC = (window.THREE && window.THREE.Fog) || null;
+            if (!FC) return;
+            scene.fog = new FC(colorNum, near, far);
+          }
+
+          scene.fog.color.setHex(colorNum);
+          scene.fog.near = near;
+          scene.fog.far = far;
+
+          if (applyBg && renderer && renderer.setClearColor) {
+            renderer.setClearColor(colorNum, 1);
+          }
+        } catch (_) {}
+      };
+
+      /* ---- Fog restore (when disabled) ---- */
+      st._restoreFog = () => {
+        try {
+          const gw = Game.world();
+          if (!gw || !gw.threeScene) return;
+          const scene = gw.threeScene.scene;
+          const renderer = gw.threeScene.renderer;
+          if (st._origFog && scene && scene.fog) {
+            scene.fog.color.setHex(st._origFog.color);
+            scene.fog.near = st._origFog.near;
+            scene.fog.far = st._origFog.far;
+          }
+          if (st._origClear && renderer && renderer.setClearColor) {
+            renderer.setClearColor(st._origClear.hex, st._origClear.alpha);
+          }
+        } catch (_) {}
+        st._fogWorld = null;
+        st._origFog = null;
+        st._origClear = null;
+      };
+
+      /* ---- Main loop ---- */
       st._loop = () => {
         if (!Mods.on('skybox')) { st._rafId = 0; st._running = false; return; }
         st._rafId = requestAnimationFrame(st._loop);
+
+        // fog は毎フレーム強制上書き（ゲームに戻されないように）
+        st._applyFog();
+
+        // skybox は URL / epoch 変化時のみ
         if (st._loading) return;
         const url = Mods.gs('skybox', 'imageURL', '');
         if (!url) return;
@@ -6068,16 +6160,30 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         if (st._rafId) { cancelAnimationFrame(st._rafId); st._rafId = 0; }
         st._running = false;
       };
+
       st._start();
     },
-    apply(enabled) {
+    apply(enabled, store) {
       const st = this;
-      if (enabled) st._start && st._start();
-      else st._stop && st._stop();
+      if (enabled) {
+        // fog 設定が変わったら復元情報をリセットして再適用
+        if (store && store.fogEnabled === false) {
+          st._restoreFog && st._restoreFog();
+        } else {
+          st._applyFog && st._applyFog();
+        }
+        st._start && st._start();
+      } else {
+        st._stop && st._stop();
+        st._restoreFog && st._restoreFog();
+      }
     },
-    destroy() { const st = this; st._stop && st._stop(); }
+    destroy() {
+      const st = this;
+      st._stop && st._stop();
+      st._restoreFog && st._restoreFog();
+    }
   });
-
   /* ===== MOD: Recorder ===== */
   Mods.reg({
     id: 'recorder', name: 'Screen Recorder', category: 'Visual', icon: 'svg:videoCam', description: 'Record screen with optional audio', defaultEnabled: false,
