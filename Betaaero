@@ -6134,24 +6134,22 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         st._origClear = null;
       };
 
-      // ---- CSS (canvas を全画面に + 透明化 + optional starfield) ----
+      // ---- CSS ----
       st._buildCSS = () => {
+        const skyHex = st._hexSafe(Mods.gs('skybox', 'clearColor', '#000000'), '#000000');
         const starsOn = Mods.gs('skybox', 'starfieldEnabled', false) === true;
 
-        // ★ body/html/#app は塗らない（ホットバー下の白帯を防ぐ）
-        // ★ canvas を 100vw/100vh に引き伸ばして余白を消す
+        // canvas のサイズ・位置は一切いじらない。ゲームの描画が壊れるため。
+        // 隙間の領域は html/body の背景色（Sky color）で埋める。
         const base = `
           canvas#game, #game, canvas.game-canvas, canvas[data-engine] {
             background: transparent !important;
             background-image: none !important;
             background-color: transparent !important;
-            width: 100vw !important;
-            height: 100vh !important;
-            position: fixed !important;
-            top: 0 !important;
-            left: 0 !important;
           }
-          #app { background: transparent !important; }
+          html, body {
+            background: ${skyHex} !important;
+          }
         `;
 
         if (!starsOn) return base;
@@ -6216,9 +6214,10 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         if (st._styleEl) { try { st._styleEl.remove(); } catch (_) {} st._styleEl = null; }
       };
 
-      // ---- Force inline (canvas のみ) ----
+      // ---- Force inline (canvas は透明化のみ。サイズは触らない) ----
       st._forceInline = () => {
         try {
+          const skyHex = st._hexSafe(Mods.gs('skybox', 'clearColor', '#000000'), '#000000');
           const cv = document.getElementById('game') || document.querySelector('canvas');
           if (cv) {
             if (cv.style.getPropertyValue('background-image') !== 'none')
@@ -6227,21 +6226,16 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
               cv.style.setProperty('background-color', 'transparent', 'important');
             if (cv.style.getPropertyValue('background') !== 'transparent')
               cv.style.setProperty('background', 'transparent', 'important');
-            if (cv.style.getPropertyValue('width') !== '100vw')
-              cv.style.setProperty('width', '100vw', 'important');
-            if (cv.style.getPropertyValue('height') !== '100vh')
-              cv.style.setProperty('height', '100vh', 'important');
-            if (cv.style.getPropertyValue('position') !== 'fixed')
-              cv.style.setProperty('position', 'fixed', 'important');
-            if (cv.style.getPropertyValue('top') !== '0px')
-              cv.style.setProperty('top', '0', 'important');
-            if (cv.style.getPropertyValue('left') !== '0px')
-              cv.style.setProperty('left', '0', 'important');
           }
+          const html = document.documentElement;
+          if (html.style.getPropertyValue('background') !== skyHex)
+            html.style.setProperty('background', skyHex, 'important');
+          if (document.body.style.getPropertyValue('background') !== skyHex)
+            document.body.style.setProperty('background', skyHex, 'important');
         } catch (_) {}
       };
 
-      // ---- WebGL clear color (below-cloud) ----
+      // ---- WebGL clear color ----
       st._applyClearNow = () => {
         try {
           const gw = Game.world();
@@ -6302,7 +6296,6 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         st._applyFog();
         st._hookRenderer();
 
-        // 画像適用（URL / ワールド変化時のみ）
         if (st._loading) return;
         const url = Mods.gs('skybox', 'imageURL', '');
         if (!url) return;
@@ -6376,19 +6369,16 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         st._restoreRenderer && st._restoreRenderer();
         st._restoreFog && st._restoreFog();
 
-        // canvas のインライン強制だけ解除
+        // canvas / html / body のインライン強制を解除
         try {
           const cv = document.getElementById('game') || document.querySelector('canvas');
           if (cv) {
             cv.style.removeProperty('background-image');
             cv.style.removeProperty('background-color');
             cv.style.removeProperty('background');
-            cv.style.removeProperty('width');
-            cv.style.removeProperty('height');
-            cv.style.removeProperty('position');
-            cv.style.removeProperty('top');
-            cv.style.removeProperty('left');
           }
+          document.documentElement.style.removeProperty('background');
+          document.body.style.removeProperty('background');
         } catch (_) {}
       }
     },
@@ -6404,12 +6394,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           cv.style.removeProperty('background-image');
           cv.style.removeProperty('background-color');
           cv.style.removeProperty('background');
-          cv.style.removeProperty('width');
-          cv.style.removeProperty('height');
-          cv.style.removeProperty('position');
-          cv.style.removeProperty('top');
-          cv.style.removeProperty('left');
         }
+        document.documentElement.style.removeProperty('background');
+        document.body.style.removeProperty('background');
       } catch (_) {}
     }
   });
