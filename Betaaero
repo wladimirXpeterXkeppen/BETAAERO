@@ -5919,6 +5919,165 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       // WebGL の texImage2D も同様
     }
   });
+  /* ===== MOD: Custom Sky (KTX2 texture replacement) ===== */
+  Mods.reg({
+    id: 'skybox',
+    name: 'Custom Sky',
+    category: 'Visual',
+    icon: 'svg:sky',
+    description: 'Replace the skybox texture with a custom image (auto-reloads every match)',
+    defaultEnabled: false,
+    settings: [
+      { id: 'imageURL', type: 'text', label: 'Image URL', default: 'https://i.postimg.cc/02KcC6MM/Minecraft-2025-04-12-21-48-38-min-bea680a9c.webp' },
+      { id: 'autoReload', type: 'toggle', label: 'Reload on new match', default: true }
+    ],
+    init() {
+      const st = this;
+      st._rafId = 0;
+      st._running = false;
+      st._lastTry = 0;
+      st._appliedGW = null;
+      st._appliedEpoch = -1;
+      st._appliedSceneUUID = null;
+      st._appliedURL = '';
+      st._cachedCanvas = null;
+      st._cachedURL = '';
+      st._pendingURL = null;
+      st._pendingPromise = null;
+      st._loading = false;
+
+      st._loadImage = (url) => {
+        if (!url) { st._cachedCanvas = null; st._cachedURL = ''; return Promise.resolve(null); }
+        if (url === st._cachedURL && st._cachedCanvas) return Promise.resolve(st._cachedCanvas);
+        if (st._pendingURL === url && st._pendingPromise) return st._pendingPromise;
+        st._pendingURL = url;
+        st._pendingPromise = new Promise((resolve) => {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = () => {
+            if (st._pendingURL === url) { st._pendingURL = null; st._pendingPromise = null; }
+            try {
+              const canvas = document.createElement('canvas');
+              canvas.width = img.width;
+              canvas.height = img.height;
+              canvas.getContext('2d').drawImage(img, 0, 0);
+              st._cachedCanvas = canvas;
+              st._cachedURL = url;
+              resolve(canvas);
+            } catch (e) { console.warn('[Skybox] canvas failed (CORS?):', e); resolve(null); }
+          };
+          img.onerror = () => {
+            if (st._pendingURL === url) { st._pendingURL = null; st._pendingPromise = null; }
+            console.warn('[Skybox] image load failed:', url);
+            resolve(null);
+          };
+          img.src = url;
+        });
+        return st._pendingPromise;
+      };
+
+      st._tryApply = (canvas) => {
+        try {
+          const gw = Game.world();
+          if (!gw || !gw.threeScene || !gw.threeScene.scene) return false;
+          const scene = gw.threeScene.scene;
+          let skyTex = null, skyMesh = null, skyMat = null;
+          scene.traverse((obj) => {
+            if (!obj.isMesh || skyTex) return;
+            const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+            mats.forEach((mat) => {
+              if (!mat || skyTex) return;
+              ['map', 'envMap', 'alphaMap'].forEach((slot) => {
+                const tex = mat[slot];
+                if (!tex) return;
+                if (tex.isCompressedTexture || tex.constructor?.name?.includes('Compressed')) {
+                  skyTex = tex; skyMesh = obj; skyMat = mat;
+                }
+              });
+            });
+          });
+          if (!skyTex) return false;
+          try {
+            Object.defineProperty(skyTex, 'image', { value: canvas, writable: true, configurable: true });
+          } catch (_) {
+            try { skyTex.image = canvas; } catch (_) {}
+          }
+          skyTex.isCompressedTexture = false;
+          skyTex.format = 1023;
+          skyTex.type = 1009;
+          skyTex.mipmaps = [];
+          skyTex.generateMipmaps = false;
+          skyTex.needsUpdate = true;
+          skyTex.flipY = true;
+          if (skyMat && skyMat.uniforms) {
+            for (const key in skyMat.uniforms) {
+              if (skyMat.uniforms[key].value === skyTex) skyMat.uniforms[key].value = skyTex;
+            }
+          }
+          if (skyMat) skyMat.needsUpdate = true;
+          if (skyMesh) skyMesh.visible = true;
+          return true;
+        } catch (e) { console.warn('[Skybox] apply failed:', e); return false; }
+      };
+
+      st._loop = () => {
+        if (!Mods.on('skybox')) { st._rafId = 0; st._running = false; return; }
+        st._rafId = requestAnimationFrame(st._loop);
+        if (st._loading) return;
+        const url = Mods.gs('skybox', 'imageURL', '');
+        if (!url) return;
+        const gw = Game.world();
+        if (!gw) { st._appliedGW = null; return; }
+        const scene = gw.threeScene && gw.threeScene.scene;
+        const sceneUUID = scene ? scene.uuid : null;
+        const epoch = Game.epoch;
+        const autoReload = Mods.gs('skybox', 'autoReload', true);
+        const urlChanged = url !== st._appliedURL;
+        const epochChanged = epoch !== st._appliedEpoch;
+        const gwChanged = gw !== st._appliedGW;
+        const sceneChanged = sceneUUID !== st._appliedSceneUUID;
+        const needApply = urlChanged || st._appliedURL === '' ||
+          (autoReload && (epochChanged || gwChanged || sceneChanged));
+        if (!needApply) return;
+        const now = performance.now();
+        if (now - st._lastTry < 100) return;
+        st._lastTry = now;
+        st._loading = true;
+        st._loadImage(url).then((canvas) => {
+          st._loading = false;
+          if (!canvas) return;
+          if (st._tryApply(canvas)) {
+            const curGW = Game.world();
+            if (!curGW) return;
+            st._appliedGW = curGW;
+            st._appliedEpoch = Game.epoch;
+            st._appliedURL = url;
+            if (curGW.threeScene && curGW.threeScene.scene) st._appliedSceneUUID = curGW.threeScene.scene.uuid;
+            console.log('[Skybox] applied (epoch ' + Game.epoch + ')');
+          }
+        });
+      };
+
+      st._start = () => {
+        if (st._running) return;
+        st._running = true;
+        st._lastTry = 0;
+        st._rafId = requestAnimationFrame(st._loop);
+      };
+      st._stop = () => {
+        if (st._rafId) { cancelAnimationFrame(st._rafId); st._rafId = 0; }
+        st._running = false;
+      };
+      st._start();
+    },
+    apply(enabled) {
+      const st = this;
+      if (enabled) st._start && st._start();
+      else st._stop && st._stop();
+    },
+    destroy() { const st = this; st._stop && st._stop(); }
+  });
+
   /* ===== MOD: Recorder ===== */
   Mods.reg({
     id: 'recorder', name: 'Screen Recorder', category: 'Visual', icon: 'svg:videoCam', description: 'Record screen with optional audio', defaultEnabled: false,
