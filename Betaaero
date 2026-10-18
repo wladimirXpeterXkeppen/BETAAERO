@@ -5936,7 +5936,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       { id: 'starfieldBg', type: 'color', label: '  Star background', default: '#05050f' },
       { id: 'starfieldNebula', type: 'toggle', label: '  Nebula glow', default: true },
       { id: 'starfieldSpeed', type: 'slider', label: '  Star speed (s)', min: 20, max: 300, step: 10, default: 80 },
-      // ---- Below-cloud color (unrendered area) ----
+      // ---- Below-cloud color ----
       { id: 'clearColor', type: 'color', label: 'Sky color (below clouds)', default: '#000000' },
       { id: 'clearAlpha', type: 'slider', label: '  Sky opacity (0=transparent)', min: 0, max: 1, step: 0.05, default: 0 },
       // ---- Fog ----
@@ -6134,20 +6134,24 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         st._origClear = null;
       };
 
-      // ---- CSS (canvas 透明化 + body/背景色 + optional starfield) ----
+      // ---- CSS (canvas を全画面に + 透明化 + optional starfield) ----
       st._buildCSS = () => {
-        const skyHex = st._hexSafe(Mods.gs('skybox', 'clearColor', '#000000'), '#000000');
         const starsOn = Mods.gs('skybox', 'starfieldEnabled', false) === true;
 
-        // ★ starfield OFF でも必ずこの base を返す（canvas の青を消すため）
+        // ★ body/html/#app は塗らない（ホットバー下の白帯を防ぐ）
+        // ★ canvas を 100vw/100vh に引き伸ばして余白を消す
         const base = `
-          html, body { background: ${skyHex} !important; }
-          #app, #app > div, #app > div > div { background: ${skyHex} !important; }
-          canvas#game, #game, canvas.game-canvas, canvas[data-engine], #app canvas {
+          canvas#game, #game, canvas.game-canvas, canvas[data-engine] {
             background: transparent !important;
             background-image: none !important;
             background-color: transparent !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
           }
+          #app { background: transparent !important; }
         `;
 
         if (!starsOn) return base;
@@ -6212,10 +6216,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         if (st._styleEl) { try { st._styleEl.remove(); } catch (_) {} st._styleEl = null; }
       };
 
-      // ---- Force inline (canvas 透明 + body/html/app 背景色) ----
+      // ---- Force inline (canvas のみ) ----
       st._forceInline = () => {
         try {
-          const skyHex = st._hexSafe(Mods.gs('skybox', 'clearColor', '#000000'), '#000000');
           const cv = document.getElementById('game') || document.querySelector('canvas');
           if (cv) {
             if (cv.style.getPropertyValue('background-image') !== 'none')
@@ -6224,15 +6227,17 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
               cv.style.setProperty('background-color', 'transparent', 'important');
             if (cv.style.getPropertyValue('background') !== 'transparent')
               cv.style.setProperty('background', 'transparent', 'important');
+            if (cv.style.getPropertyValue('width') !== '100vw')
+              cv.style.setProperty('width', '100vw', 'important');
+            if (cv.style.getPropertyValue('height') !== '100vh')
+              cv.style.setProperty('height', '100vh', 'important');
+            if (cv.style.getPropertyValue('position') !== 'fixed')
+              cv.style.setProperty('position', 'fixed', 'important');
+            if (cv.style.getPropertyValue('top') !== '0px')
+              cv.style.setProperty('top', '0', 'important');
+            if (cv.style.getPropertyValue('left') !== '0px')
+              cv.style.setProperty('left', '0', 'important');
           }
-          const html = document.documentElement;
-          if (html.style.getPropertyValue('background') !== skyHex)
-            html.style.setProperty('background', skyHex, 'important');
-          if (document.body.style.getPropertyValue('background') !== skyHex)
-            document.body.style.setProperty('background', skyHex, 'important');
-          const app = document.getElementById('app');
-          if (app && app.style.getPropertyValue('background') !== skyHex)
-            app.style.setProperty('background', skyHex, 'important');
         } catch (_) {}
       };
 
@@ -6292,7 +6297,6 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         if (!Mods.on('skybox')) { st._rafId = 0; st._running = false; return; }
         st._rafId = requestAnimationFrame(st._loop);
 
-        // 毎フレーム: CSS 存在保証 + canvas インライン強制 + clearColor 維持
         st._ensureStyle();
         st._forceInline();
         st._applyFog();
@@ -6355,11 +6359,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       st._currentClear = st._readClear();
 
       if (enabled) {
-        // CSS は starfield の有無に関わらず必ず適用（canvas の青を消す）
         st._ensureStyle && st._ensureStyle();
         st._forceInline && st._forceInline();
 
-        // Fog
         if (store && store.fogEnabled === false) {
           st._restoreFog && st._restoreFog();
         } else {
@@ -6374,18 +6376,19 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         st._restoreRenderer && st._restoreRenderer();
         st._restoreFog && st._restoreFog();
 
-        // インライン強制分を解除
+        // canvas のインライン強制だけ解除
         try {
           const cv = document.getElementById('game') || document.querySelector('canvas');
           if (cv) {
             cv.style.removeProperty('background-image');
             cv.style.removeProperty('background-color');
             cv.style.removeProperty('background');
+            cv.style.removeProperty('width');
+            cv.style.removeProperty('height');
+            cv.style.removeProperty('position');
+            cv.style.removeProperty('top');
+            cv.style.removeProperty('left');
           }
-          document.documentElement.style.removeProperty('background');
-          document.body.style.removeProperty('background');
-          const app = document.getElementById('app');
-          if (app) app.style.removeProperty('background');
         } catch (_) {}
       }
     },
@@ -6401,15 +6404,15 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           cv.style.removeProperty('background-image');
           cv.style.removeProperty('background-color');
           cv.style.removeProperty('background');
+          cv.style.removeProperty('width');
+          cv.style.removeProperty('height');
+          cv.style.removeProperty('position');
+          cv.style.removeProperty('top');
+          cv.style.removeProperty('left');
         }
-        document.documentElement.style.removeProperty('background');
-        document.body.style.removeProperty('background');
-        const app = document.getElementById('app');
-        if (app) app.style.removeProperty('background');
       } catch (_) {}
     }
   });
-
   /* ===== MOD: Recorder ===== */
   Mods.reg({
     id: 'recorder', name: 'Screen Recorder', category: 'Visual', icon: 'svg:videoCam', description: 'Record screen with optional audio', defaultEnabled: false,
