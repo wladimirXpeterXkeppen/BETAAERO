@@ -6296,9 +6296,8 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       st._currentClear = st._readClear();
       if (enabled) {
         // CSS (starfield) 更新
-        if (Mods.gs('skybox', 'starfieldEnabled', false)) st._ensureStyle && st._ensureStyle();
-        else st._removeStyle && st._removeStyle();
-
+        // starfield の有無に関わらず CSS を常に適用（canvas 透明化のため）
+        if (st._ensureStyle) st._ensureStyle();
         // Fog 復元チェック
         if (store && store.fogEnabled === false) {
           st._restoreFog && st._restoreFog();
