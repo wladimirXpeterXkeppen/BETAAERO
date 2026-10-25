@@ -5925,21 +5925,20 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     name: 'Custom Sky',
     category: 'Visual',
     icon: 'svg:sky',
-    description: 'Image / starfield / below-cloud color / fog (auto-reloads every match)',
+    description: 'Image / upload / starfield / below-cloud color / fog',
     defaultEnabled: false,
     settings: [
-      // ---- Image ----
-      { id: 'imageURL', type: 'text', label: 'Image URL (KTX2 replace)', default: 'https://i.postimg.cc/02KcC6MM/Minecraft-2025-04-12-21-48-38-min-bea680a9c.webp' },
+      { id: 'imageURL', type: 'text', label: 'Image URL', default: 'https://i.postimg.cc/02KcC6MM/Minecraft-2025-04-12-21-48-38-min-bea680a9c.webp' },
+      { id: 'useUploaded', type: 'toggle', label: 'Use uploaded image (overrides URL)', default: false },
+      { id: '__uploadImage', type: 'button', label: 'Upload image file', buttonText: 'Upload File' },
+      { id: '__clearUploaded', type: 'button', label: 'Clear uploaded image', buttonText: 'Clear' },
       { id: 'autoReload', type: 'toggle', label: '  Reload on new match/map', default: true },
-      // ---- Starfield ----
       { id: 'starfieldEnabled', type: 'toggle', label: 'CSS starfield', default: false },
       { id: 'starfieldBg', type: 'color', label: '  Star background', default: '#05050f' },
       { id: 'starfieldNebula', type: 'toggle', label: '  Nebula glow', default: true },
       { id: 'starfieldSpeed', type: 'slider', label: '  Star speed (s)', min: 20, max: 300, step: 10, default: 80 },
-      // ---- Below-cloud color ----
       { id: 'clearColor', type: 'color', label: 'Sky color (below clouds)', default: '#000000' },
       { id: 'clearAlpha', type: 'slider', label: '  Sky opacity (0=transparent)', min: 0, max: 1, step: 0.05, default: 0 },
-      // ---- Fog ----
       { id: 'fogEnabled', type: 'toggle', label: 'Fog override', default: false },
       { id: 'fogColor', type: 'color', label: '  Fog color', default: '#0a0520' },
       { id: 'fogNear', type: 'slider', label: '  Fog near', min: 0, max: 500, step: 1, default: 20 },
@@ -5949,10 +5948,42 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     init() {
       const st = this;
 
+      // ---- Sky Image IDB (ac-skybox-db / images) ----
+      if (!st._SkyIDB) {
+        st._SkyIDB = (() => {
+          const N = 'ac-skybox-db', V = 1;
+          let _d = null;
+          function open() {
+            if (_d) return Promise.resolve(_d);
+            return new Promise((res, rej) => {
+              const r = indexedDB.open(N, V);
+              r.onupgradeneeded = e => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains('images')) {
+                  db.createObjectStore('images', { keyPath: 'id' });
+                }
+              };
+              r.onsuccess = () => { _d = r.result; res(_d); };
+              r.onerror = () => rej(r.error);
+            });
+          }
+          function stx(m) { return open().then(db => db.transaction('images', m).objectStore('images')); }
+          function rq(r) { return new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+          return {
+            async put(v) { return rq((await stx('readwrite')).put(v)); },
+            async get(id) { return rq((await stx('readonly')).get(id)); },
+            async del(id) { return rq((await stx('readwrite')).delete(id)); }
+          };
+        })();
+      }
+
       // ---- state ----
-      st._rafId = 0;
+      st._tickId = 0;
       st._running = false;
       st._lastTry = 0;
+      st._lastRoomHook = 0;
+      st._lastCssCheck = 0;
+      st._lastInlineCheck = 0;
       st._appliedGW = null;
       st._appliedEpoch = -1;
       st._appliedSceneUUID = null;
@@ -5962,10 +5993,19 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       st._pendingURL = null;
       st._pendingPromise = null;
       st._loading = false;
-      
       st._forceReapply = false;
       st._hookedRoom = null;
-      st._pendingMatchEnd = false; // ★ 試合終了パケットを受信したかどうかのフラグ
+      st._pendingMatchEndAt = 0;
+
+      // 適用済みメッシュ・テクスチャの参照
+      st._appliedMesh = null;
+      st._appliedMat = null;
+      st._appliedTex = null;
+      st._appliedSlot = null;
+      st._appliedCanvas = null;
+
+      // アップロード画像のキャッシュ ({ blob, url } or null)
+      st._uploadedBlobURL = null;
 
       st._fogWorld = null;
       st._origFog = null;
@@ -5976,6 +6016,14 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       st._origRender = null;
       st._currentClear = { colorNum: 0x000000, alpha: 0 };
 
+      // render フック用キャッシュ
+      st._renderFogActive = false;
+      st._renderFogColorNum = 0x0a0520;
+      st._renderFogNear = 20;
+      st._renderFogFar = 120;
+      st._renderImageURL = '';
+      st._renderUseUploaded = false;
+
       // ---- helpers ----
       st._hexToNum = (hex, fallback) => {
         const h = String(hex || '');
@@ -5985,14 +6033,141 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         const h = String(hex || '');
         return /^#[0-9A-Fa-f]{6}$/.test(h) ? h : fallback;
       };
-
       st._readClear = () => {
         const colorNum = st._hexToNum(Mods.gs('skybox', 'clearColor', '#000000'), 0x000000);
         const alpha = Math.max(0, Math.min(1, Number(Mods.gs('skybox', 'clearAlpha', 0))));
         return { colorNum, alpha };
       };
 
-      // ---- Room Packet Hook (Game End) ----
+      st._toast = (msg, color) => {
+        let el = document.getElementById('ac-toast');
+        if (!el) {
+          el = ce('div'); el.id = 'ac-toast';
+          el.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483650;background:rgba(20,28,44,.97);border:1px solid rgba(59,130,246,.55);color:#fff;padding:10px 18px;border-radius:10px;font-family:Inter,sans-serif;font-size:13px;box-shadow:0 10px 40px rgba(0,0,0,.6);transition:opacity .25s;pointer-events:none;';
+          document.body.appendChild(el);
+        }
+        if (color) el.style.borderColor = color;
+        el.textContent = msg;
+        el.style.opacity = '1';
+        clearTimeout(el._h);
+        el._h = setTimeout(() => { el.style.opacity = '0'; }, 2400);
+      };
+
+      // ---- Render cache ----
+      st._refreshRenderCache = () => {
+        st._currentClear = st._readClear();
+        const fogOn = Mods.gs('skybox', 'fogEnabled', false);
+        st._renderFogActive = !!fogOn;
+        if (fogOn) {
+          st._renderFogColorNum = st._hexToNum(Mods.gs('skybox', 'fogColor', '#0a0520'), 0x0a0520);
+          st._renderFogNear = Number(Mods.gs('skybox', 'fogNear', 20));
+          st._renderFogFar = Number(Mods.gs('skybox', 'fogFar', 120));
+        }
+        st._renderImageURL = Mods.gs('skybox', 'imageURL', '');
+        st._renderUseUploaded = !!Mods.gs('skybox', 'useUploaded', false);
+      };
+
+      // ---- Source URL resolution ----
+      st._resolveSourceSync = () => {
+        if (st._renderUseUploaded && st._uploadedBlobURL) {
+          return st._uploadedBlobURL.url;
+        }
+        return st._renderImageURL;
+      };
+
+      // ---- Uploaded image loading from IDB ----
+      st._loadUploadedFromIDB = async () => {
+        try {
+          const rec = await st._SkyIDB.get('current');
+          if (!rec || !rec.blob) return;
+          if (st._uploadedBlobURL && st._uploadedBlobURL.blob === rec.blob) return;
+          if (st._uploadedBlobURL) {
+            try { URL.revokeObjectURL(st._uploadedBlobURL.url); } catch (_) {}
+          }
+          const url = URL.createObjectURL(rec.blob);
+          st._uploadedBlobURL = { blob: rec.blob, url };
+          if (st._renderUseUploaded) st._forceReapply = true;
+        } catch (_) {}
+      };
+
+      // ---- Upload / Clear ----
+      st._openUploadPicker = () => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.style.cssText = 'position:fixed;left:-9999px;top:-9999px;';
+        document.body.appendChild(input);
+        input.onchange = async (e) => {
+          try { input.remove(); } catch (_) {}
+          const file = e.target.files && e.target.files[0];
+          if (!file) return;
+          if (!file.type.startsWith('image/')) {
+            st._toast('Not an image file', '#ef4444');
+            return;
+          }
+          if (file.size > 10 * 1024 * 1024) {
+            st._toast('Image too large (max 10MB)', '#ef4444');
+            return;
+          }
+          try {
+            await st._SkyIDB.put({ id: 'current', blob: file, name: file.name });
+            if (st._uploadedBlobURL) {
+              try { URL.revokeObjectURL(st._uploadedBlobURL.url); } catch (_) {}
+              st._uploadedBlobURL = null;
+            }
+            const url = URL.createObjectURL(file);
+            st._uploadedBlobURL = { blob: file, url };
+            st._cachedCanvas = null;
+            st._cachedURL = '';
+            st._appliedURL = '';
+            Mods.ss('skybox', 'useUploaded', true);
+            st._forceReapply = true;
+            st._toast('Uploaded: ' + file.name, '#22c55e');
+          } catch (err) {
+            st._toast('Upload failed: ' + (err && err.message ? err.message : err), '#ef4444');
+          }
+        };
+        input.click();
+      };
+
+      st._clearUploaded = async () => {
+        try { await st._SkyIDB.del('current'); } catch (_) {}
+        if (st._uploadedBlobURL) {
+          try { URL.revokeObjectURL(st._uploadedBlobURL.url); } catch (_) {}
+          st._uploadedBlobURL = null;
+        }
+        st._cachedCanvas = null;
+        st._cachedURL = '';
+        st._appliedURL = '';
+        Mods.ss('skybox', 'useUploaded', false);
+        st._forceReapply = true;
+        st._toast('Uploaded image cleared', '#FFD766');
+      };
+
+      st._btnActions = {
+        '__uploadImage': () => st._openUploadPicker(),
+        '__clearUploaded': () => st._clearUploaded(),
+      };
+
+      // ---- Mesh survival ----
+      st._isAppliedAlive = () => {
+        if (!st._appliedMesh || !st._appliedMat || !st._appliedTex) return false;
+        try {
+          if (!st._appliedMesh.parent) return false;
+          if (st._appliedMat[st._appliedSlot] !== st._appliedTex) return false;
+          if (st._appliedTex.image !== st._appliedCanvas) return false;
+          return true;
+        } catch (_) { return false; }
+      };
+      st._resetAppliedRefs = () => {
+        st._appliedMesh = null;
+        st._appliedMat = null;
+        st._appliedTex = null;
+        st._appliedSlot = null;
+        st._appliedCanvas = null;
+      };
+
+      // ---- Room hook (GAME_END = 14) ----
       st._hookRoom = () => {
         if (!Mods.on('skybox')) return;
         try {
@@ -6001,19 +6176,17 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           const room = gw.server.room;
           if (!room || typeof room.onMessage !== 'function') return;
           if (st._hookedRoom === room) return;
-          
           st._hookedRoom = room;
           room.onMessage('*', (packetID, data) => {
-            // 14 = GAME_END (試合終了)
             if (packetID === 14) {
-              st._pendingMatchEnd = true;
-              console.log('[Skybox] Match end packet detected. Waiting for next map...');
+              st._pendingMatchEndAt = performance.now();
+              console.log('[Skybox] GAME_END received, waiting for map reload...');
             }
           });
         } catch (_) {}
       };
 
-      // ---- Image load (canvas cache) ----
+      // ---- Image load ----
       st._loadImage = (url) => {
         if (!url) { st._cachedCanvas = null; st._cachedURL = ''; return Promise.resolve(null); }
         if (url === st._cachedURL && st._cachedCanvas) return Promise.resolve(st._cachedCanvas);
@@ -6032,11 +6205,10 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
               st._cachedCanvas = canvas;
               st._cachedURL = url;
               resolve(canvas);
-            } catch (e) { console.warn('[Skybox] canvas failed (CORS?):', e); resolve(null); }
+            } catch (e) { resolve(null); }
           };
           img.onerror = () => {
             if (st._pendingURL === url) { st._pendingURL = null; st._pendingPromise = null; }
-            console.warn('[Skybox] image load failed:', url);
             resolve(null);
           };
           img.src = url;
@@ -6044,14 +6216,14 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         return st._pendingPromise;
       };
 
-      // ---- KTX2 texture replacement ----
+      // ---- KTX2 replace ----
       st._tryApplyImage = (canvas) => {
         try {
           const gw = Game.world();
           if (!gw || !gw.threeScene || !gw.threeScene.scene) return false;
           const scene = gw.threeScene.scene;
-          let skyTex = null, skyMesh = null, skyMat = null;
-          
+          let skyTex = null, skyMesh = null, skyMat = null, skySlot = null;
+
           scene.traverse((obj) => {
             if (!obj.isMesh || skyTex) return;
             const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
@@ -6061,20 +6233,20 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
                 const tex = mat[slot];
                 if (!tex) return;
                 if (tex.isCompressedTexture || tex.constructor?.name?.includes('Compressed')) {
-                  skyTex = tex; skyMesh = obj; skyMat = mat;
+                  skyTex = tex; skyMesh = obj; skyMat = mat; skySlot = slot;
                 }
               });
             });
           });
-          
+
           if (!skyTex) return false;
-          
+
           try {
             Object.defineProperty(skyTex, 'image', { value: canvas, writable: true, configurable: true });
           } catch (_) {
             try { skyTex.image = canvas; } catch (_) {}
           }
-          
+
           skyTex.isCompressedTexture = false;
           skyTex.format = 1023;
           skyTex.type = 1009;
@@ -6082,7 +6254,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           skyTex.generateMipmaps = false;
           skyTex.needsUpdate = true;
           skyTex.flipY = true;
-          
+
           if (skyMat && skyMat.uniforms) {
             for (const key in skyMat.uniforms) {
               if (skyMat.uniforms[key].value === skyTex) skyMat.uniforms[key].value = skyTex;
@@ -6091,95 +6263,27 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           if (skyMat) skyMat.needsUpdate = true;
           if (skyMesh) skyMesh.visible = true;
 
+          st._appliedMesh = skyMesh;
+          st._appliedMat = skyMat;
+          st._appliedTex = skyTex;
+          st._appliedSlot = skySlot;
+          st._appliedCanvas = canvas;
           return true;
-        } catch (e) { console.warn('[Skybox] image apply failed:', e); return false; }
-      };
-
-      // ---- Fog ----
-      st._applyFog = () => {
-        if (!Mods.gs('skybox', 'fogEnabled', false)) return;
-        try {
-          const gw = Game.world();
-          if (!gw || !gw.threeScene) return;
-          const scene = gw.threeScene.scene;
-          const renderer = gw.threeScene.renderer;
-          if (!scene) return;
-
-          if (st._fogWorld !== gw) {
-            st._fogWorld = gw;
-            st._origFog = scene.fog ? {
-              color: scene.fog.color.getHex(),
-              near: scene.fog.near,
-              far: scene.fog.far
-            } : null;
-            st._origClear = null;
-            try {
-              if (renderer && renderer.getClearColor && renderer.getClearAlpha) {
-                const tmp = { r: 0, g: 0, b: 0 };
-                renderer.getClearColor(tmp);
-                st._origClear = {
-                  hex: (Math.round(tmp.r * 255) << 16) | (Math.round(tmp.g * 255) << 8) | Math.round(tmp.b * 255),
-                  alpha: renderer.getClearAlpha()
-                };
-              }
-            } catch (_) {}
-          }
-
-          const colorNum = st._hexToNum(Mods.gs('skybox', 'fogColor', '#0a0520'), 0x0a0520);
-          const near = Number(Mods.gs('skybox', 'fogNear', 20));
-          const far = Number(Mods.gs('skybox', 'fogFar', 120));
-          const applyBg = Mods.gs('skybox', 'fogApplyBackground', true) !== false;
-
-          if (!scene.fog) {
-            const FC = (window.THREE && window.THREE.Fog) || null;
-            if (!FC) return;
-            scene.fog = new FC(colorNum, near, far);
-          }
-          scene.fog.color.setHex(colorNum);
-          scene.fog.near = near;
-          scene.fog.far = far;
-          if (applyBg && renderer && renderer.setClearColor) {
-            renderer.setClearColor(colorNum, 1);
-          }
-        } catch (_) {}
-      };
-
-      st._restoreFog = () => {
-        try {
-          const gw = Game.world();
-          if (!gw || !gw.threeScene) return;
-          const scene = gw.threeScene.scene;
-          const renderer = gw.threeScene.renderer;
-          if (st._origFog && scene && scene.fog) {
-            scene.fog.color.setHex(st._origFog.color);
-            scene.fog.near = st._origFog.near;
-            scene.fog.far = st._origFog.far;
-          }
-          if (st._origClear && renderer && renderer.setClearColor) {
-            renderer.setClearColor(st._origClear.hex, st._origClear.alpha);
-          }
-        } catch (_) {}
-        st._fogWorld = null;
-        st._origFog = null;
-        st._origClear = null;
+        } catch (e) { return false; }
       };
 
       // ---- CSS ----
       st._buildCSS = () => {
         const skyHex = st._hexSafe(Mods.gs('skybox', 'clearColor', '#000000'), '#000000');
         const starsOn = Mods.gs('skybox', 'starfieldEnabled', false) === true;
-
         const base = `
           canvas#game, #game, canvas.game-canvas, canvas[data-engine] {
             background: transparent !important;
             background-image: none !important;
             background-color: transparent !important;
           }
-          html, body {
-            background: ${skyHex} !important;
-          }
+          html, body { background: ${skyHex} !important; }
         `;
-
         if (!starsOn) return base;
 
         const bgSafe = st._hexSafe(Mods.gs('skybox', 'starfieldBg', '#05050f'), '#05050f');
@@ -6189,13 +6293,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           ? 'radial-gradient(circle at 80% 20%, rgba(120, 80, 255, 0.4) 0%, transparent 55%),' +
             'radial-gradient(circle at 20% 80%, rgba(255, 80, 200, 0.3) 0%, transparent 60%)'
           : 'none';
-
         return base + `
           body::before {
-            content: "";
-            position: fixed;
-            inset: 0;
-            z-index: -1;
+            content: ""; position: fixed; inset: 0; z-index: -1;
             background-color: ${bgSafe};
             background-image:
               radial-gradient(1.5px 1.5px at 20px 30px, #fff, transparent),
@@ -6210,12 +6310,8 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
             animation: __ac_stars_scroll ${speed}s linear infinite;
           }
           body::after {
-            content: "";
-            position: fixed;
-            inset: 0;
-            z-index: -1;
-            pointer-events: none;
-            background: ${nebulaCSS};
+            content: ""; position: fixed; inset: 0; z-index: -1;
+            pointer-events: none; background: ${nebulaCSS};
             display: ${nebula ? 'block' : 'none'};
           }
           @keyframes __ac_stars_scroll {
@@ -6237,12 +6333,10 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         st._styleEl.textContent = css;
         document.head.appendChild(st._styleEl);
       };
-
       st._removeStyle = () => {
         if (st._styleEl) { try { st._styleEl.remove(); } catch (_) {} st._styleEl = null; }
       };
 
-      // ---- Force inline ----
       st._forceInline = () => {
         try {
           const skyHex = st._hexSafe(Mods.gs('skybox', 'clearColor', '#000000'), '#000000');
@@ -6263,7 +6357,6 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         } catch (_) {}
       };
 
-      // ---- WebGL clear color ----
       st._applyClearNow = () => {
         try {
           const gw = Game.world();
@@ -6277,6 +6370,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         } catch (_) {}
       };
 
+      // render フック: fog / clearColor はここで毎フレーム強制
       st._hookRenderer = () => {
         try {
           const gw = Game.world();
@@ -6284,8 +6378,6 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           const scene = gw.threeScene.scene;
           const renderer = gw.threeScene.renderer;
           if (!renderer || !scene) return;
-
-          st._applyClearNow();
 
           if (st._hookedRenderer === renderer) return;
           if (st._hookedRenderer && st._origRender) {
@@ -6298,12 +6390,16 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
               const cc = st._currentClear;
               if (renderer.setClearColor) renderer.setClearColor(cc.colorNum, cc.alpha);
               if (s && s.background) s.background = null;
+              if (st._renderFogActive && s && s.fog) {
+                s.fog.color.setHex(st._renderFogColorNum);
+                s.fog.near = st._renderFogNear;
+                s.fog.far = st._renderFogFar;
+              }
             } catch (_) {}
             return st._origRender(s, cam);
           };
         } catch (_) {}
       };
-
       st._restoreRenderer = () => {
         try {
           if (st._hookedRenderer && st._origRender) {
@@ -6314,20 +6410,46 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         st._origRender = null;
       };
 
-      // ---- Loop ----
-      st._loop = () => {
-        if (!Mods.on('skybox')) { st._rafId = 0; st._running = false; return; }
-        st._rafId = requestAnimationFrame(st._loop);
+      // ---- Tick (100ms) ----
+      st._tick = () => {
+        if (!Mods.on('skybox')) return;
+        const now = performance.now();
 
-        st._hookRoom(); // ★ 試合終了パケットの監視を毎フレームチェック（多重登録はガード済み）
+        if (now - st._lastRoomHook > 1000) {
+          st._lastRoomHook = now;
+          st._hookRoom();
+        }
 
-        st._ensureStyle();
-        st._forceInline();
-        st._applyFog();
-        st._hookRenderer();
+        // メッシュ生存監視
+        if (st._appliedMesh && !st._isAppliedAlive()) {
+          st._forceReapply = true;
+          st._resetAppliedRefs();
+        }
 
+        // GAME_END 後の待機
+        if (st._pendingMatchEndAt > 0) {
+          const since = now - st._pendingMatchEndAt;
+          const meshGone = st._appliedMesh && !st._isAppliedAlive();
+          if (meshGone || since > 5000) {
+            st._forceReapply = true;
+            st._resetAppliedRefs();
+            st._pendingMatchEndAt = 0;
+          }
+        }
+
+        // CSS / インラインは1秒に1回
+        if (now - st._lastCssCheck > 1000) {
+          st._lastCssCheck = now;
+          st._ensureStyle();
+        }
+        if (now - st._lastInlineCheck > 1000) {
+          st._lastInlineCheck = now;
+          st._forceInline();
+        }
+
+        // 適用判定
         if (st._loading) return;
-        const url = Mods.gs('skybox', 'imageURL', '');
+        const url = st._resolveSourceSync();
         if (!url) return;
         const gw = Game.world();
         if (!gw) { st._appliedGW = null; return; }
@@ -6335,48 +6457,34 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         const sceneUUID = scene ? scene.uuid : null;
         const epoch = Game.epoch;
         const autoReload = Mods.gs('skybox', 'autoReload', true);
-        
+
         const urlChanged = url !== st._appliedURL;
         const epochChanged = epoch !== st._appliedEpoch;
         const gwChanged = gw !== st._appliedGW;
         const sceneChanged = sceneUUID !== st._appliedSceneUUID;
-        
-        // ★ 試合終了フラグが立っている場合の処理
-        if (st._pendingMatchEnd) {
-          if (epochChanged || gwChanged || sceneChanged) {
-            // 新しいマップ/試合のワールドが生成された！
-            st._pendingMatchEnd = false;
-            st._forceReapply = true;
-            st._appliedGW = null; // 確実に再適用させるためリセット
-            console.log('[Skybox] New map detected after game end. Reapplying skybox...');
-          } else {
-            // まだ同じワールド内（試合終了画面・スコアボード等）なのでスキップ
-            return;
-          }
-        }
-        
+
         const needApply = st._forceReapply || urlChanged || st._appliedURL === '' ||
           (autoReload && (epochChanged || gwChanged || sceneChanged));
-          
         if (!needApply) return;
-        
-        const now = performance.now();
+
         if (now - st._lastTry < 100) return;
         st._lastTry = now;
         st._loading = true;
-        st._forceReapply = false; // フラグをリセット
-        
+
         st._loadImage(url).then((canvas) => {
           st._loading = false;
           if (!canvas) return;
           if (st._tryApplyImage(canvas)) {
+            st._forceReapply = false;
             const curGW = Game.world();
             if (!curGW) return;
             st._appliedGW = curGW;
             st._appliedEpoch = Game.epoch;
             st._appliedURL = url;
-            if (curGW.threeScene && curGW.threeScene.scene) st._appliedSceneUUID = curGW.threeScene.scene.uuid;
-            console.log('[Skybox] image applied (epoch ' + Game.epoch + ')');
+            if (curGW.threeScene && curGW.threeScene.scene) {
+              st._appliedSceneUUID = curGW.threeScene.scene.uuid;
+            }
+            console.log('[Skybox] applied (epoch ' + Game.epoch + ')');
           }
         });
       };
@@ -6385,37 +6493,67 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         if (st._running) return;
         st._running = true;
         st._lastTry = 0;
+        st._lastRoomHook = 0;
+        st._lastCssCheck = 0;
+        st._lastInlineCheck = 0;
         st._forceReapply = true;
-        st._rafId = requestAnimationFrame(st._loop);
+        st._hookRoom();
+        st._ensureStyle();
+        st._forceInline();
+        st._hookRenderer();
+        st._tickId = setInterval(st._tick, 100);
       };
       st._stop = () => {
-        if (st._rafId) { cancelAnimationFrame(st._rafId); st._rafId = 0; }
+        if (st._tickId) { clearInterval(st._tickId); st._tickId = 0; }
         st._running = false;
       };
 
-      st._currentClear = st._readClear();
-      st._ensureStyle();
-      st._forceInline();
+      // ---- Boot ----
+      st._refreshRenderCache();
+      st._loadUploadedFromIDB(); // async, will populate _uploadedBlobURL
       st._start();
     },
     apply(enabled, store) {
       const st = this;
-      st._currentClear = st._readClear();
+      st._refreshRenderCache && st._refreshRenderCache();
 
       if (enabled) {
-        if (store && store.fogEnabled === false) { st._restoreFog && st._restoreFog(); }
-        else { st._applyFog && st._applyFog(); }
+        // URL が変わった時だけ強制再適用（fog 等の変更で無駄にリロードしない）
+        const curSource = st._resolveSourceSync();
+        if (curSource && curSource !== st._appliedURL) st._forceReapply = true;
+
+        st._ensureStyle && st._ensureStyle();
+        st._forceInline && st._forceInline();
+        st._hookRenderer && st._hookRenderer();
         st._applyClearNow && st._applyClearNow();
-        st._forceReapply = true;
         st._start && st._start();
       } else {
         st._stop && st._stop();
-        if (st._styleEl) { st._styleEl.remove(); st._styleEl = null; }
+        st._removeStyle && st._removeStyle();
         st._restoreRenderer && st._restoreRenderer();
-        st._restoreFog && st._restoreFog();
         st._hookedRoom = null;
-        st._pendingMatchEnd = false;
-        
+        st._pendingMatchEndAt = 0;
+        st._resetAppliedRefs && st._resetAppliedRefs();
+
+        try {
+          const gw = Game.world();
+          if (gw && gw.threeScene) {
+            const scene = gw.threeScene.scene;
+            const renderer = gw.threeScene.renderer;
+            if (st._origFog && scene && scene.fog) {
+              scene.fog.color.setHex(st._origFog.color);
+              scene.fog.near = st._origFog.near;
+              scene.fog.far = st._origFog.far;
+            }
+            if (st._origClear && renderer && renderer.setClearColor) {
+              renderer.setClearColor(st._origClear.hex, st._origClear.alpha);
+            }
+          }
+        } catch (_) {}
+        st._fogWorld = null;
+        st._origFog = null;
+        st._origClear = null;
+
         try {
           const cv = document.getElementById('game') || document.querySelector('canvas');
           if (cv) {
@@ -6431,6 +6569,11 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     destroy() {
       const st = this;
       st.apply(false, {});
+      // Blob URL を解放（MOD 削除時のみ。無効化時は保持して次回 ON で再利用）
+      if (st._uploadedBlobURL) {
+        try { URL.revokeObjectURL(st._uploadedBlobURL.url); } catch (_) {}
+        st._uploadedBlobURL = null;
+      }
     }
   });
   /* ===== MOD: Recorder ===== */
