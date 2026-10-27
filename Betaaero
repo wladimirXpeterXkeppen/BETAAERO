@@ -5621,231 +5621,538 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       st._applySlot && st._applySlot('off');
     }
   });
-  /* ===== MOD: Texture Pack (v2: sync preload, no global hooks) ===== */
+  /* ===== MOD: Texture Pack Manager (multi-pack, IndexedDB) ===== */
   Mods.reg({
-    id: 'texturepack', name: 'Texture Pack', category: 'Visual', icon: 'svg:image',
-    description: 'Upload .txt packs (synchronous preload, no DOM hooks)',
+    id: 'texturepack',
+    name: 'Texture Pack',
+    category: 'Visual',
+    icon: 'svg:image',
+    description: 'Upload multiple packs, switch between them (IndexedDB)',
     defaultEnabled: false,
     settings: [
-      { id: 'pack', type: 'custom', default: {} },  // ★ reset で消えないよう登録
-      { id: '__upload', type: 'button', label: 'Upload pack (.txt)',  buttonText: 'Upload File' },
-      { id: '__resetPack', type: 'button', label: 'Remove loaded pack', buttonText: 'Reset' }
+      { id: 'activePackId', type: 'custom', default: null },
+      { id: '__upload',  type: 'button', label: 'Upload new pack (.txt)',    buttonText: 'Upload New' },
+      { id: '__manage',  type: 'button', label: 'Manage packs (list / switch / delete)', buttonText: 'Manage' },
+      { id: '__refresh', type: 'button', label: 'Re-apply to scene textures', buttonText: 'Refresh' },
+      { id: '__reset',   type: 'button', label: 'Deactivate current pack',    buttonText: 'Deactivate' }
     ],
+
     init() {
       const st = this;
 
-      // ═════ 旧バージョンのグローバルフックを復元 ═════
-      try {
-        const old = Mods.get('texturepack');
-        if (old && old !== st) {
-          if (old._origSrcDesc) {
-            try { Object.defineProperty(HTMLImageElement.prototype, 'src', old._origSrcDesc); } catch (_) {}
-          }
-          if (old._origSetAttr) {
-            try { Element.prototype.setAttribute = old._origSetAttr; } catch (_) {}
-          }
-          if (old._origSetProp) {
-            try { CSSStyleDeclaration.prototype.setProperty = old._origSetProp; } catch (_) {}
-          }
-        }
-      } catch (_) {}
+      // ── IndexedDB for packs
+      st._tdb = (() => {
+        const N = 'ac-texpack-db', V = 1;
+        let _d = null;
+        const open = () => {
+          if (_d) return Promise.resolve(_d);
+          return new Promise((res, rej) => {
+            const r = indexedDB.open(N, V);
+            r.onupgradeneeded = e => {
+              const db = e.target.result;
+              if (!db.objectStoreNames.contains('packs'))
+                db.createObjectStore('packs', { keyPath: 'id' });
+            };
+            r.onsuccess = () => { _d = r.result; res(_d); };
+            r.onerror = () => rej(r.error);
+          });
+        };
+        const stx = m => open().then(db => db.transaction('packs', m).objectStore('packs'));
+        const rq = r => new Promise((res, rej) => {
+          r.onsuccess = () => res(r.result);
+          r.onerror   = () => rej(r.error);
+        });
+        return {
+          put:  async v  => rq((await stx('readwrite')).put(v)),
+          get:  async id => rq((await stx('readonly')).get(id)),
+          del:  async id => rq((await stx('readwrite')).delete(id)),
+          all:  async () => rq((await stx('readonly')).getAll())
+        };
+      })();
 
-      st._pack = {};
-      st._preloaded = new Map();   // filename → HTMLImageElement（同期参照用）
-      st._scanId = null;
+      st._activePackId = null;
+      st._activePack = {};
+      st._originalSrcs = new WeakMap();   // tex → 元 URL
+      st._appliedTo = new WeakMap();      // tex → 現在適用中の dataURI or null
       st._hooksInstalled = false;
 
-      // ═════ ヘルパ ═════
-      function toast(msg, color) {
-        let el = document.getElementById('ac-toast');
-        if (!el) {
-          el = ce('div'); el.id = 'ac-toast';
-          el.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483650;background:rgba(20,28,44,.97);border:1px solid rgba(59,130,246,.55);color:#fff;padding:10px 18px;border-radius:10px;font-family:Inter,sans-serif;font-size:13px;box-shadow:0 10px 40px rgba(0,0,0,.6);transition:opacity .25s;pointer-events:none;';
-          document.body.appendChild(el);
-        }
-        if (color) el.style.borderColor = color;
-        el.textContent = msg;
-        el.style.opacity = '1';
-        clearTimeout(el._h);
-        el._h = setTimeout(() => { el.style.opacity = '0'; }, 2200);
-      }
-      st._toast = toast;
-
-      st._getFilename = (src) => {
-        if (!src || typeof src !== 'string') return null;
-        if (src.startsWith('data:') || src.startsWith('blob:')) return null;
-        try {
-          const parts = src.split('/');
-          return parts[parts.length - 1].split('?')[0].split('#')[0];
-        } catch (_) { return null; }
-      };
-
-      // "grass-D5f2a1.png" → "grass.png"
-      st._normalizeName = (fn) => {
-        if (!fn) return '';
-        return fn.replace(/-[A-Za-z0-9_]{4,}\.[a-z0-9]+$/i, m => '.' + m.split('.').pop());
-      };
-
-      // pack から該当画像を探す（完全一致 → ハッシュ正規化 → 部分一致）
-      st._findOverride = (src) => {
-        const fn = st._getFilename(src);
-        if (!fn) return null;
-        if (st._pack[fn] && st._preloaded.has(fn)) return st._preloaded.get(fn);
-        const norm = st._normalizeName(fn);
-        for (const key of Object.keys(st._pack)) {
-          if (st._normalizeName(key) === norm && st._preloaded.has(key)) return st._preloaded.get(key);
-        }
-        for (const key of Object.keys(st._pack)) {
-          const base = key.replace(/\.[^.]+$/, '');
-          if (base.length >= 3 && (fn.startsWith(base + '.') || fn.startsWith(base + '-')) && st._preloaded.has(key)) {
-            return st._preloaded.get(key);
-          }
-        }
-        return null;
-      };
-
-      st._loadPackFromConfig = () => {
-        const p = Config.get('mods.texturepack.pack', {});
-        st._pack = (p && typeof p === 'object' && !Array.isArray(p)) ? p : {};
-      };
-
-      // 全 URL を Image として事前ロード
-      st._preloadPack = () => {
-        st._loadPackFromConfig();
-        st._preloaded.clear();
-        const entries = Object.entries(st._pack);
-        if (!entries.length) return Promise.resolve();
-        const promises = entries.map(([key, url]) => new Promise(resolve => {
-          const img = new Image();
-          img.crossOrigin = 'anonymous';
-          img.onload = () => { st._preloaded.set(key, img); resolve(); };
-          img.onerror = () => { console.warn('[TexturePack] load failed:', url); resolve(); };
-          img.src = url;
-        }));
-        return Promise.all(promises).then(() => {
-          console.log(`[TexturePack] preloaded ${st._preloaded.size}/${entries.length}`);
+      // ── ボタンアクション
+      st._btnActions = {
+        '__upload': () => st._uploadNew(),
+        '__manage': () => st._openManage(),
+        '__refresh': async () => {
+          const n = await st._refreshSceneTextures();
+          st._toast('Refreshed ' + n + ' textures', n ? '#22c55e' : '#FFD766');
+        },
+        '__reset': () => {
+          Mods.ss('texturepack', 'activePackId', null);
+          st._activePackId = null;
+          st._activePack = {};
           st._refreshSceneTextures();
-        });
+          st._toast('Pack deactivated', '#FFD766');
+        }
       };
 
-      // 既にアップロード済みテクスチャに needsUpdate を立てる
-      st._refreshSceneTextures = () => {
-        try {
-          const scene = Game.world()?.threeScene?.scene;
-          if (!scene) return;
-          let n = 0;
-          scene.traverse(obj => {
-            if (!obj.isMesh) return;
-            const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-            mats.forEach(m => {
-              if (!m) return;
-              ['map','envMap','alphaMap','normalMap','emissiveMap','specularMap'].forEach(slot => {
-                const tex = m[slot];
-                if (!tex || !tex.image) return;
-                const src = tex.image.src || '';
-                if (src && st._findOverride(src)) { tex.needsUpdate = true; n++; }
-              });
+      st._initAsync();
+    },
+
+    async _initAsync() {
+      const st = this;
+
+      // ── 旧形式（config に単一 pack が入っていた場合）を IDB に移行
+      try {
+        const oldPack = Config.get('mods.texturepack.pack', null);
+        if (oldPack && typeof oldPack === 'object' && Object.keys(oldPack).length > 0) {
+          const all = await st._tdb.all();
+          if (all.length === 0) {
+            const id = 'pack-' + Date.now();
+            await st._tdb.put({
+              id,
+              name: 'Migrated Pack',
+              createdAt: Date.now(),
+              size: 0,
+              pack: oldPack
             });
-          });
-          if (n) console.log(`[TexturePack] refresh: ${n} textures`);
-        } catch (_) {}
-      };
+            Mods.ss('texturepack', 'activePackId', id);
+            console.log('[TexturePack] migrated old pack to IDB');
+          }
+          Mods.ss('texturepack', 'pack', {});
+        }
+      } catch (e) {
+        console.warn('[TexturePack] migration:', e);
+      }
 
-      // ═════ texImage2D を「同期的に」上書きする唯一のフック ═════
-      st._patchGL = (gl) => {
-        if (!gl || gl.__acTexPackV2) return;
-        gl.__acTexPackV2 = true;
-        const native = (typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext)
-          ? WebGL2RenderingContext.prototype.texImage2D
-          : WebGLRenderingContext.prototype.texImage2D;
-        gl.texImage2D = function(target, level, internalFormat, ...rest) {
-          if (!Mods.on('texturepack')) return native.call(gl, target, level, internalFormat, ...rest);
-          const source = rest[rest.length - 1];
-          if (source instanceof HTMLImageElement) {
-            const override = st._findOverride(source.src);
-            if (override) {
-              return native.call(gl, target, level, internalFormat, ...rest.slice(0, rest.length - 1), override);
+      // ── 使用中パックの読み込み
+      st._activePackId = Mods.gs('texturepack', 'activePackId', null);
+      await st._loadActivePack();
+
+      // ── img.src インターセプト
+      st._installHooks();
+
+      // ── 初回反映
+      if (Object.keys(st._activePack).length > 0) {
+        setTimeout(() => st._refreshSceneTextures().catch(() => {}), 800);
+      }
+
+      // ── 定期再適用（新チャンク対応、30 秒ごと）
+      st._intervalId = setInterval(() => {
+        if (Mods.on('texturepack') && Object.keys(st._activePack).length > 0) {
+          st._refreshSceneTextures().catch(() => {});
+        }
+      }, 30000);
+
+      // ── Config の activePackId を監視（外部から変更されたら再読込）
+      st._detectTick = setInterval(() => {
+        const id = Mods.gs('texturepack', 'activePackId', null);
+        if (id !== st._activePackId) {
+          st._activePackId = id;
+          st._loadActivePack().then(() => {
+            if (Object.keys(st._activePack).length > 0)
+              st._refreshSceneTextures().catch(() => {});
+          });
+        }
+      }, 2000);
+    },
+
+    async _loadActivePack() {
+      const st = this;
+      st._activePack = {};
+      if (!st._activePackId) return;
+      try {
+        const entry = await st._tdb.get(st._activePackId);
+        if (entry && entry.pack) {
+          st._activePack = entry.pack;
+          console.log('[TexturePack] active:', entry.name,
+            Object.keys(entry.pack).length, 'entries');
+        }
+      } catch (e) {
+        console.warn('[TexturePack] load active:', e);
+      }
+    },
+
+    // ── URL → 上書き dataURI
+    _findOverride(url) {
+      if (!Mods.on('texturepack')) return null;
+      if (!url || typeof url !== 'string') return null;
+      if (url.startsWith('data:') || url.startsWith('blob:')) return null;
+      const st = this;
+      const fn = url.split('/').pop().split('?')[0].split('#')[0];
+      if (st._activePack[fn]) return st._activePack[fn];
+      for (const key in st._activePack) {
+        if (url.includes(key)) return st._activePack[key];
+      }
+      return null;
+    },
+
+    // ── img.src / setAttribute / CSS url の差し替え
+    _installHooks() {
+      const st = this;
+      if (st._hooksInstalled) return;
+      st._hooksInstalled = true;
+
+      // ① HTMLImageElement.prototype.src
+      try {
+        const desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+        if (desc && desc.set) {
+          st._srcDesc = desc;
+          Object.defineProperty(HTMLImageElement.prototype, 'src', {
+            configurable: true,
+            enumerable: desc.enumerable,
+            get() { return desc.get.call(this); },
+            set(value) {
+              if (typeof value === 'string' && value &&
+                  !value.startsWith('data:') && !value.startsWith('blob:')) {
+                try { this.__originalSrc = value; } catch (_) {}
+                const rep = st._findOverride(value);
+                if (rep) value = rep;
+              }
+              return desc.set.call(this, value);
+            }
+          });
+        }
+      } catch (e) { console.warn('[TexturePack] src hook:', e); }
+
+      // ② Element.setAttribute
+      try {
+        st._origSetAttr = Element.prototype.setAttribute;
+        Element.prototype.setAttribute = function (name, value) {
+          if (name === 'src' && typeof value === 'string' && value &&
+              !value.startsWith('data:')) {
+            try { this.__originalSrc = value; } catch (_) {}
+            const rep = st._findOverride(value);
+            if (rep) value = rep;
+          }
+          return st._origSetAttr.call(this, name, value);
+        };
+      } catch (e) { console.warn('[TexturePack] setAttribute hook:', e); }
+
+      // ③ CSS url(...)
+      try {
+        st._origSetProp = CSSStyleDeclaration.prototype.setProperty;
+        CSSStyleDeclaration.prototype.setProperty = function (name, value, priority) {
+          if (typeof value === 'string' && value.includes('url(') &&
+              !value.includes('data:')) {
+            for (const key in st._activePack) {
+              if (value.includes(key)) {
+                value = 'url("' + st._activePack[key] + '")';
+                break;
+              }
             }
           }
-          return native.call(gl, target, level, internalFormat, ...rest);
+          return st._origSetProp.call(this, name, value, priority);
         };
-      };
+      } catch (e) { console.warn('[TexturePack] setProperty hook:', e); }
+    },
 
-      st._scanForGL = () => {
-        const cv = document.getElementById('game') || document.querySelector('canvas');
-        if (!cv) return;
-        let gl = null;
-        try { gl = cv.getContext('webgl2') || cv.getContext('webgl'); } catch (_) {}
-        if (gl) st._patchGL(gl);
-      };
+    // ── シーン内の既存テクスチャに差分適用
+    async _refreshSceneTextures() {
+      const st = this;
+      if (!Mods.on('texturepack')) return 0;
 
-      // ═════ パック読み込み ═════
-      st._parsePackText = (text) => {
+      const scene = AeroClient.Game.world()?.threeScene?.scene;
+      if (!scene) return 0;
+
+      const slots = ['map','envMap','alphaMap','normalMap','emissiveMap',
+                     'roughnessMap','metalnessMap','aoMap','lightMap'];
+      const jobs = [];
+      let touched = 0;
+
+      scene.traverse(obj => {
+        if (!obj.isMesh) return;
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach(m => {
+          if (!m) return;
+          slots.forEach(slot => {
+            const tex = m[slot];
+            if (!tex || !tex.image) return;
+
+            // 元 URL を特定（__originalSrc 優先、なければ src が dataURI でない場合のみ）
+            let origSrc = null;
+            try {
+              if (tex.image.__originalSrc) origSrc = tex.image.__originalSrc;
+              else if (tex.image.src && !tex.image.src.startsWith('data:'))
+                origSrc = tex.image.src;
+            } catch (_) {}
+
+            // 記録
+            if (origSrc && !st._originalSrcs.has(tex))
+              st._originalSrcs.set(tex, origSrc);
+
+            const baseSrc = st._originalSrcs.get(tex) || origSrc;
+            if (!baseSrc) return;
+
+            const rep = st._findOverride(baseSrc);
+            const applied = st._appliedTo.get(tex);
+
+            if (rep) {
+              if (applied === rep) return;
+              touched++;
+              jobs.push(new Promise(resolve => {
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                img.__originalSrc = baseSrc;
+                img.onload = () => {
+                  try {
+                    tex.image = img;
+                    tex.needsUpdate = true;
+                    st._appliedTo.set(tex, rep);
+                    resolve(1);
+                  } catch (_) { resolve(0); }
+                };
+                img.onerror = () => resolve(0);
+                img.src = rep;
+              }));
+            } else if (applied) {
+              // 現在 override 中だが新パックに無い → 元に戻す
+              touched++;
+              jobs.push(new Promise(resolve => {
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                img.__originalSrc = baseSrc;
+                img.onload = () => {
+                  try {
+                    tex.image = img;
+                    tex.needsUpdate = true;
+                    st._appliedTo.delete(tex);
+                    resolve(1);
+                  } catch (_) { resolve(0); }
+                };
+                img.onerror = () => resolve(0);
+                img.src = baseSrc;
+              }));
+            }
+          });
+        });
+      });
+
+      await Promise.all(jobs);
+      if (touched > 0) console.log('[TexturePack] refreshed', touched, 'textures');
+      return touched;
+    },
+
+    // ── 新規アップロード
+    async _uploadNew() {
+      const st = this;
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.txt,text/plain';
+      input.style.cssText = 'position:fixed;left:-9999px;';
+      document.body.appendChild(input);
+
+      input.onchange = async (e) => {
+        try { input.remove(); } catch (_) {}
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+
+        const text = await file.text();
         const pack = {}; let count = 0;
-        for (const line of String(text).split('\n')) {
+        for (const line of text.split(/\r?\n/)) {
           const idx = line.indexOf('>');
           if (idx === -1) continue;
           const k = line.slice(0, idx).trim();
           const v = line.slice(idx + 1).trim();
           if (k && v) { pack[k] = v; count++; }
         }
-        return { pack, count };
+        if (!count) { st._toast('No valid entries found', '#ef4444'); return; }
+
+        let size = 0;
+        try { size = new Blob([JSON.stringify(pack)]).size; } catch (_) {}
+
+        const name = file.name.replace(/\.txt$/i, '') ||
+                     ('Pack ' + new Date().toLocaleTimeString());
+        const id = 'pack-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+
+        try {
+          await st._tdb.put({ id, name, createdAt: Date.now(), size, pack });
+        } catch (err) {
+          st._toast('Save failed: ' + (err.message || err), '#ef4444');
+          return;
+        }
+
+        // アクティブに
+        Mods.ss('texturepack', 'activePackId', id);
+        st._activePackId = id;
+        await st._loadActivePack();
+        await st._refreshSceneTextures();
+
+        st._toast('Loaded: ' + name + ' (' + count + ' entries)', '#22c55e');
+
+        // 管理モーダルが開いていれば再描画
+        if (document.getElementById('__cs_pack_manage_modal')) st._openManage();
       };
 
-      st._setPack = (pack, label) => {
-        Mods.ss('texturepack', 'pack', pack);
-        st._pack = pack;
-        const n = Object.keys(pack).length;
-        if (!n) { toast('Pack removed', '#ef4444'); st._preloaded.clear(); st._refreshSceneTextures(); return; }
-        toast(`Loading ${n} entries (${label})...`, '#93c5fd');
-        st._preloadPack().then(() => {
-          toast(`Ready: ${st._preloaded.size}/${n} loaded`, '#22c55e');
-        });
-      };
-
-      // ═════ ボタンアクション ═════
-      st._btnActions = {
-        '__upload': () => {
-          const input = document.createElement('input');
-          input.type = 'file';
-          input.accept = '.txt,text/plain';
-          input.style.cssText = 'position:fixed;left:-9999px;top:-9999px;';
-          document.body.appendChild(input);
-          input.onchange = async (e) => {
-            try { input.remove(); } catch (_) {}
-            const file = e.target.files && e.target.files[0];
-            if (!file) return;
-            const text = await file.text();
-            const { pack, count } = st._parsePackText(text);
-            if (!count) { toast('No valid entries', '#ef4444'); return; }
-            st._setPack(pack, file.name);
-          };
-          input.click();
-        },
-        '__resetPack': () => st._setPack({}, 'reset')
-      };
-
-      // ═════ Init ═════
-      st._loadPackFromConfig();
-      st._preloadPack();
-      st._scanForGL();
-      st._scanId = setInterval(st._scanForGL, 1000);
-
-      const n = Object.keys(st._pack).length;
-      if (n > 0) toast('Texture pack: ' + n + ' entries', '#22c55e');
+      input.click();
     },
+
+    // ── 管理モーダル
+    async _openManage() {
+      const st = this;
+      let packs = [];
+      try { packs = await st._tdb.all(); } catch (e) { packs = []; }
+
+      // ソート: 新しい順
+      packs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+      document.getElementById('__cs_pack_manage_modal')?.remove();
+
+      const mask = ce('div', 'ac-modal-mask');
+      mask.id = '__cs_pack_manage_modal';
+      mask.onclick = e => { if (e.target === mask) mask.remove(); };
+
+      const box = ce('div', 'ac-modal wide', mask);
+
+      const closeBtn = ce('button', 'ac-modal-close', box);
+      closeBtn.textContent = '✕';
+      closeBtn.onclick = () => mask.remove();
+
+      const h = ce('h3', '', box);
+      h.textContent = 'Texture Packs';
+
+      const activeEntry = packs.find(p => p.id === st._activePackId);
+      const sub = ce('div', 'sub', box);
+      sub.textContent = `${packs.length} pack${packs.length === 1 ? '' : 's'} stored · active: ${activeEntry ? activeEntry.name : 'none'}`;
+
+      const list = ce('div', '', box);
+      list.style.cssText =
+        'display:flex;flex-direction:column;gap:8px;' +
+        'max-height:50vh;overflow-y:auto;padding:2px;';
+
+      if (!packs.length) {
+        const empty = ce('div', '', list);
+        empty.style.cssText = 'padding:30px;text-align:center;color:#888;font-size:12px;';
+        empty.textContent = 'No packs yet. Click "Upload New" to add one.';
+      } else {
+        for (const p of packs) {
+          const isActive = p.id === st._activePackId;
+          const row = ce('div', '', list);
+          row.style.cssText =
+            `display:flex;align-items:center;gap:12px;padding:12px;` +
+            `background:${isActive ? 'rgba(59,130,246,0.12)' : '#232328'};` +
+            `border:1px solid ${isActive ? '#3b82f6' : 'rgba(255,255,255,0.06)'};` +
+            `border-radius:8px;`;
+
+          // ラジオボタン
+          const radio = ce('input', '', row);
+          radio.type = 'radio';
+          radio.name = '__cs_pack_active';
+          radio.checked = isActive;
+          radio.style.cssText = 'accent-color:#3b82f6;cursor:pointer;flex-shrink:0;';
+          radio.onchange = () => {
+            st._activePackId = null; // apply() にリロードさせる
+            Mods.ss('texturepack', 'activePackId', p.id);
+            mask.remove();
+            st._toast('Switching to: ' + p.name, '#93c5fd');
+          };
+
+          // 情報
+          const info = ce('div', '', row);
+          info.style.cssText = 'flex:1;min-width:0;';
+
+          const nameEl = ce('div', '', info);
+          nameEl.textContent = p.name;
+          nameEl.style.cssText =
+            'font-size:13px;font-weight:600;color:#fff;' +
+            'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+
+          const meta = ce('div', '', info);
+          const entryCount = p.pack ? Object.keys(p.pack).length : 0;
+          const sizeTxt = p.size
+            ? (p.size < 1024 * 1024
+                ? (p.size / 1024).toFixed(1) + ' KB'
+                : (p.size / 1024 / 1024).toFixed(2) + ' MB')
+            : '?';
+          const date = p.createdAt
+            ? new Date(p.createdAt).toLocaleDateString()
+            : '?';
+          meta.textContent = `${entryCount} entries · ${sizeTxt} · ${date}`;
+          meta.style.cssText = 'font-size:11px;color:#8a8d96;margin-top:2px;';
+
+          // ACTIVE バッジ
+          if (isActive) {
+            const badge = ce('div', '', row);
+            badge.textContent = 'ACTIVE';
+            badge.style.cssText =
+              'background:#3b82f6;color:#fff;font-size:10px;font-weight:700;' +
+              'padding:2px 8px;border-radius:4px;flex-shrink:0;';
+          }
+
+          // 削除ボタン
+          const delBtn = ce('button', 'ac-btn secondary', row);
+          delBtn.textContent = 'Delete';
+          delBtn.style.cssText =
+            'color:#ff8899;border-color:rgba(255,136,153,0.3);flex-shrink:0;';
+          delBtn.onclick = async () => {
+            if (!confirm(`Delete pack "${p.name}"?`)) return;
+            try { await st._tdb.del(p.id); } catch (_) {}
+            if (p.id === st._activePackId) {
+              Mods.ss('texturepack', 'activePackId', null);
+              st._activePackId = null;
+              await st._loadActivePack();
+              await st._refreshSceneTextures();
+            }
+            mask.remove();
+            st._openManage();
+          };
+        }
+      }
+
+      // フッター
+      const actions = ce('div', '', box);
+      actions.style.cssText =
+        'display:flex;gap:8px;justify-content:flex-end;margin-top:16px;';
+
+      const uploadBtn = ce('button', 'ac-btn', actions);
+      uploadBtn.textContent = 'Upload New';
+      uploadBtn.onclick = () => { mask.remove(); st._uploadNew(); };
+
+      const closeBtn2 = ce('button', 'ac-btn secondary', actions);
+      closeBtn2.textContent = 'Close';
+      closeBtn2.onclick = () => mask.remove();
+    },
+
+    _toast(msg, color) {
+      let el = document.getElementById('ac-toast');
+      if (!el) {
+        el = ce('div'); el.id = 'ac-toast';
+        el.style.cssText =
+          'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);' +
+          'z-index:2147483650;background:rgba(20,28,44,.97);' +
+          'border:1px solid rgba(59,130,246,.55);color:#fff;' +
+          'padding:10px 18px;border-radius:10px;font-family:Inter,sans-serif;' +
+          'font-size:13px;box-shadow:0 10px 40px rgba(0,0,0,.6);' +
+          'transition:opacity .25s;pointer-events:none;';
+        document.body.appendChild(el);
+      }
+      if (color) el.style.borderColor = color;
+      el.textContent = msg;
+      el.style.opacity = '1';
+      clearTimeout(el._h);
+      el._h = setTimeout(() => { el.style.opacity = '0'; }, 3000);
+    },
+
     apply(enabled) {
       const st = this;
-      if (enabled) {
-        st._preloadPack && st._preloadPack();
-        st._scanForGL && st._scanForGL();
+      if (!enabled) return;
+      // Config 側で activePackId が変わっていたらロードし直す
+      const id = Mods.gs('texturepack', 'activePackId', null);
+      if (id !== st._activePackId) {
+        st._activePackId = id;
+        st._loadActivePack().then(() => {
+          if (Object.keys(st._activePack).length > 0)
+            st._refreshSceneTextures().catch(() => {});
+        });
       }
     },
+
     destroy() {
       const st = this;
-      if (st._scanId) { clearInterval(st._scanId); st._scanId = null; }
-      // texImage2D フックは残す（Mods.on('texturepack') で no-op になる）
-      // preloaded の Image はガベージコレクションに任せる
+      if (st._intervalId) { clearInterval(st._intervalId); st._intervalId = null; }
+      if (st._detectTick) { clearInterval(st._detectTick); st._detectTick = null; }
+      try { if (st._srcDesc) Object.defineProperty(HTMLImageElement.prototype, 'src', st._srcDesc); } catch (_) {}
+      try { if (st._origSetAttr) Element.prototype.setAttribute = st._origSetAttr; } catch (_) {}
+      try { if (st._origSetProp) CSSStyleDeclaration.prototype.setProperty = st._origSetProp; } catch (_) {}
+      st._hooksInstalled = false;
+      document.getElementById('__cs_pack_manage_modal')?.remove();
     }
   });
   /* ===== MOD: Custom Sky (image + starfield + clear color + fog) ===== */
