@@ -5621,24 +5621,25 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       st._applySlot && st._applySlot('off');
     }
   });
-  /* ===== MOD: Texture Pack Manager (multi-pack, IndexedDB) ===== */
+  /* ===== MOD: Texture Pack Manager (v3 - persistent) ===== */
   Mods.reg({
     id: 'texturepack',
     name: 'Texture Pack',
     category: 'Visual',
     icon: 'svg:image',
-    description: 'Upload multiple packs, switch between them (IndexedDB)',
+    description: 'Multi-pack manager with IndexedDB persistence',
     defaultEnabled: false,
     settings: [
       { id: 'activePackId', type: 'custom', default: null },
-      { id: '__upload',  type: 'button', label: 'Upload new pack (.txt)',    buttonText: 'Upload New' },
-      { id: '__manage',  type: 'button', label: 'Manage packs (list / switch / delete)', buttonText: 'Manage' },
-      { id: '__refresh', type: 'button', label: 'Re-apply to scene textures', buttonText: 'Refresh' },
-      { id: '__reset',   type: 'button', label: 'Deactivate current pack',    buttonText: 'Deactivate' }
+      { id: '__upload',  type: 'button', label: 'Upload new pack (.txt)', buttonText: 'Upload New' },
+      { id: '__manage',  type: 'button', label: 'Manage packs',            buttonText: 'Manage' },
+      { id: '__refresh', type: 'button', label: 'Re-apply to textures',    buttonText: 'Refresh' },
+      { id: '__reset',   type: 'button', label: 'Deactivate current pack', buttonText: 'Deactivate' }
     ],
 
     init() {
       const st = this;
+      st._log = (...a) => console.log('[TexturePack]', ...a);
 
       // ── IndexedDB for packs
       st._tdb = (() => {
@@ -5672,11 +5673,12 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
 
       st._activePackId = null;
       st._activePack = {};
-      st._originalSrcs = new WeakMap();   // tex → 元 URL
-      st._appliedTo = new WeakMap();      // tex → 現在適用中の dataURI or null
+      st._loaded = false;
+      st._originalSrcs = new WeakMap();
+      st._appliedTo = new WeakMap();
       st._hooksInstalled = false;
 
-      // ── ボタンアクション
+      // ── ボタン
       st._btnActions = {
         '__upload': () => st._uploadNew(),
         '__manage': () => st._openManage(),
@@ -5685,70 +5687,102 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           st._toast('Refreshed ' + n + ' textures', n ? '#22c55e' : '#FFD766');
         },
         '__reset': () => {
-          Mods.ss('texturepack', 'activePackId', null);
-          st._activePackId = null;
-          st._activePack = {};
-          st._refreshSceneTextures();
+          st._setActivePack(null);
           st._toast('Pack deactivated', '#FFD766');
         }
       };
 
-      st._initAsync();
+      // フックは先に張る（init 内で同期実行）
+      st._installHooks();
+
+      // 復元処理
+      st._bootstrap();
     },
 
-    async _initAsync() {
+    // ★ 唯一の activePackId 書き込み口。flush で即時保存
+    _setActivePack(id) {
+      const st = this;
+      st._log('setActivePack:', id);
+
+      // 1. Config に書き込み
+      try {
+        Config.set('mods.texturepack.activePackId', id);
+        Config.flush();   // ★ 600ms 待たずに即保存
+      } catch (e) {
+        st._log('Config.set/flush error:', e);
+      }
+
+      // 2. メモリ状態更新
+      st._activePackId = id;
+      st._activePack = {};
+      st._loaded = false;
+
+      // 3. パックを再読込 → シーン反映
+      return st._loadActivePack().then(() => {
+        st._log('reloaded pack:', Object.keys(st._activePack).length, 'entries');
+        return st._refreshSceneTextures().catch(() => {});
+      });
+    },
+
+    async _bootstrap() {
       const st = this;
 
-      // ── 旧形式（config に単一 pack が入っていた場合）を IDB に移行
+      // ── 旧 pack 移行
       try {
         const oldPack = Config.get('mods.texturepack.pack', null);
         if (oldPack && typeof oldPack === 'object' && Object.keys(oldPack).length > 0) {
+          st._log('migrating old pack');
           const all = await st._tdb.all();
+          let id = Mods.gs('texturepack', 'activePackId', null);
           if (all.length === 0) {
-            const id = 'pack-' + Date.now();
-            await st._tdb.put({
-              id,
-              name: 'Migrated Pack',
-              createdAt: Date.now(),
-              size: 0,
-              pack: oldPack
-            });
-            Mods.ss('texturepack', 'activePackId', id);
-            console.log('[TexturePack] migrated old pack to IDB');
+            id = 'pack-' + Date.now();
+            await st._tdb.put({ id, name: 'Migrated Pack', createdAt: Date.now(), size: 0, pack: oldPack });
           }
-          Mods.ss('texturepack', 'pack', {});
+          Config.set('mods.texturepack.pack', {});
+          Config.set('mods.texturepack.activePackId', id);
+          try { Config.flush(); } catch (_) {}
+          st._activePackId = id;
         }
-      } catch (e) {
-        console.warn('[TexturePack] migration:', e);
-      }
+      } catch (e) { st._log('migration:', e); }
 
-      // ── 使用中パックの読み込み
-      st._activePackId = Mods.gs('texturepack', 'activePackId', null);
+      // ── activePackId を復元
+      const savedId = Mods.gs('texturepack', 'activePackId', null);
+      st._log('bootstrap: savedId =', savedId);
+      st._activePackId = savedId;
+
+      // ── パック本体を読み込み（失敗時は 1s 後に再試行）
       await st._loadActivePack();
-
-      // ── img.src インターセプト
-      st._installHooks();
-
-      // ── 初回反映
-      if (Object.keys(st._activePack).length > 0) {
-        setTimeout(() => st._refreshSceneTextures().catch(() => {}), 800);
+      if (!st._loaded && savedId) {
+        st._log('pack not loaded, retrying in 1s');
+        await new Promise(r => setTimeout(r, 1000));
+        await st._loadActivePack();
       }
 
-      // ── 定期再適用（新チャンク対応、30 秒ごと）
+      // ── 初期適用（段階的リトライ：ゲームがまだ起動していない可能性）
+      if (st._loaded) {
+        [500, 1500, 3000, 6000, 12000].forEach(ms => {
+          setTimeout(() => st._refreshSceneTextures().catch(() => {}), ms);
+        });
+      }
+
+      // ── 定期再適用（新チャンク読込対策）
       st._intervalId = setInterval(() => {
-        if (Mods.on('texturepack') && Object.keys(st._activePack).length > 0) {
+        if (Mods.on('texturepack') && st._loaded) {
           st._refreshSceneTextures().catch(() => {});
         }
       }, 30000);
 
-      // ── Config の activePackId を監視（外部から変更されたら再読込）
+      // ── 状態監視：id はあるが pack が空 → 再読込
       st._detectTick = setInterval(() => {
+        if (!Mods.on('texturepack')) return;
         const id = Mods.gs('texturepack', 'activePackId', null);
         if (id !== st._activePackId) {
-          st._activePackId = id;
+          st._log('external activePackId change detected:', id);
+          st._setActivePack(id);
+        } else if (id && !st._loaded) {
+          st._log('pack missing for id=' + id + ', retrying');
           st._loadActivePack().then(() => {
-            if (Object.keys(st._activePack).length > 0)
-              st._refreshSceneTextures().catch(() => {});
+            if (st._loaded) st._refreshSceneTextures().catch(() => {});
           });
         }
       }, 2000);
@@ -5757,25 +5791,33 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     async _loadActivePack() {
       const st = this;
       st._activePack = {};
-      if (!st._activePackId) return;
+      st._loaded = false;
+      if (!st._activePackId) {
+        st._log('no activePackId');
+        return;
+      }
       try {
         const entry = await st._tdb.get(st._activePackId);
-        if (entry && entry.pack) {
+        if (!entry) {
+          st._log('IDB entry missing for', st._activePackId);
+          return;
+        }
+        if (entry.pack && typeof entry.pack === 'object') {
           st._activePack = entry.pack;
-          console.log('[TexturePack] active:', entry.name,
-            Object.keys(entry.pack).length, 'entries');
+          st._loaded = true;
+          st._log('loaded pack:', entry.name, Object.keys(entry.pack).length, 'entries');
         }
       } catch (e) {
-        console.warn('[TexturePack] load active:', e);
+        st._log('loadActivePack error:', e);
       }
     },
 
-    // ── URL → 上書き dataURI
     _findOverride(url) {
+      const st = this;
       if (!Mods.on('texturepack')) return null;
       if (!url || typeof url !== 'string') return null;
       if (url.startsWith('data:') || url.startsWith('blob:')) return null;
-      const st = this;
+      if (!st._loaded) return null;
       const fn = url.split('/').pop().split('?')[0].split('#')[0];
       if (st._activePack[fn]) return st._activePack[fn];
       for (const key in st._activePack) {
@@ -5784,7 +5826,6 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       return null;
     },
 
-    // ── img.src / setAttribute / CSS url の差し替え
     _installHooks() {
       const st = this;
       if (st._hooksInstalled) return;
@@ -5796,8 +5837,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         if (desc && desc.set) {
           st._srcDesc = desc;
           Object.defineProperty(HTMLImageElement.prototype, 'src', {
-            configurable: true,
-            enumerable: desc.enumerable,
+            configurable: true, enumerable: desc.enumerable,
             get() { return desc.get.call(this); },
             set(value) {
               if (typeof value === 'string' && value &&
@@ -5810,7 +5850,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
             }
           });
         }
-      } catch (e) { console.warn('[TexturePack] src hook:', e); }
+      } catch (e) { st._log('src hook:', e); }
 
       // ② Element.setAttribute
       try {
@@ -5824,14 +5864,14 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           }
           return st._origSetAttr.call(this, name, value);
         };
-      } catch (e) { console.warn('[TexturePack] setAttribute hook:', e); }
+      } catch (e) { st._log('setAttribute hook:', e); }
 
       // ③ CSS url(...)
       try {
         st._origSetProp = CSSStyleDeclaration.prototype.setProperty;
         CSSStyleDeclaration.prototype.setProperty = function (name, value, priority) {
           if (typeof value === 'string' && value.includes('url(') &&
-              !value.includes('data:')) {
+              !value.includes('data:') && st._loaded) {
             for (const key in st._activePack) {
               if (value.includes(key)) {
                 value = 'url("' + st._activePack[key] + '")';
@@ -5841,13 +5881,13 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           }
           return st._origSetProp.call(this, name, value, priority);
         };
-      } catch (e) { console.warn('[TexturePack] setProperty hook:', e); }
+      } catch (e) { st._log('setProperty hook:', e); }
     },
 
-    // ── シーン内の既存テクスチャに差分適用
     async _refreshSceneTextures() {
       const st = this;
       if (!Mods.on('texturepack')) return 0;
+      if (!st._loaded) return 0;   // ★ pack 未読込なら何もしない
 
       const scene = AeroClient.Game.world()?.threeScene?.scene;
       if (!scene) return 0;
@@ -5866,7 +5906,6 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
             const tex = m[slot];
             if (!tex || !tex.image) return;
 
-            // 元 URL を特定（__originalSrc 優先、なければ src が dataURI でない場合のみ）
             let origSrc = null;
             try {
               if (tex.image.__originalSrc) origSrc = tex.image.__originalSrc;
@@ -5874,7 +5913,6 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
                 origSrc = tex.image.src;
             } catch (_) {}
 
-            // 記録
             if (origSrc && !st._originalSrcs.has(tex))
               st._originalSrcs.set(tex, origSrc);
 
@@ -5893,8 +5931,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
                 img.__originalSrc = baseSrc;
                 img.onload = () => {
                   try {
-                    tex.image = img;
-                    tex.needsUpdate = true;
+                    tex.image = img; tex.needsUpdate = true;
                     st._appliedTo.set(tex, rep);
                     resolve(1);
                   } catch (_) { resolve(0); }
@@ -5903,7 +5940,6 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
                 img.src = rep;
               }));
             } else if (applied) {
-              // 現在 override 中だが新パックに無い → 元に戻す
               touched++;
               jobs.push(new Promise(resolve => {
                 const img = new Image();
@@ -5911,8 +5947,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
                 img.__originalSrc = baseSrc;
                 img.onload = () => {
                   try {
-                    tex.image = img;
-                    tex.needsUpdate = true;
+                    tex.image = img; tex.needsUpdate = true;
                     st._appliedTo.delete(tex);
                     resolve(1);
                   } catch (_) { resolve(0); }
@@ -5926,11 +5961,10 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       });
 
       await Promise.all(jobs);
-      if (touched > 0) console.log('[TexturePack] refreshed', touched, 'textures');
+      if (touched > 0) st._log('refreshed', touched, 'textures');
       return touched;
     },
 
-    // ── 新規アップロード
     async _uploadNew() {
       const st = this;
       const input = document.createElement('input');
@@ -5953,7 +5987,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           const v = line.slice(idx + 1).trim();
           if (k && v) { pack[k] = v; count++; }
         }
-        if (!count) { st._toast('No valid entries found', '#ef4444'); return; }
+        if (!count) { st._toast('No valid entries', '#ef4444'); return; }
 
         let size = 0;
         try { size = new Blob([JSON.stringify(pack)]).size; } catch (_) {}
@@ -5969,35 +6003,29 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           return;
         }
 
-        // アクティブに
-        Mods.ss('texturepack', 'activePackId', id);
-        st._activePackId = id;
-        await st._loadActivePack();
-        await st._refreshSceneTextures();
-
+        await st._setActivePack(id);
         st._toast('Loaded: ' + name + ' (' + count + ' entries)', '#22c55e');
 
-        // 管理モーダルが開いていれば再描画
         if (document.getElementById('__cs_pack_manage_modal')) st._openManage();
       };
 
       input.click();
     },
 
-    // ── 管理モーダル
     async _openManage() {
       const st = this;
-      let packs = [];
-      try { packs = await st._tdb.all(); } catch (e) { packs = []; }
 
-      // ソート: 新しい順
+      let packs = [];
+      try { packs = await st._tdb.all(); }
+      catch (e) { st._log('IDB all() failed:', e); packs = []; }
+
       packs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
       document.getElementById('__cs_pack_manage_modal')?.remove();
 
       const mask = ce('div', 'ac-modal-mask');
       mask.id = '__cs_pack_manage_modal';
-      document.body.appendChild(mask);
+      document.body.appendChild(mask);   // ★ これが前回抜けていた
       mask.onclick = e => { if (e.target === mask) mask.remove(); };
 
       const box = ce('div', 'ac-modal wide', mask);
@@ -6032,20 +6060,17 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
             `border:1px solid ${isActive ? '#3b82f6' : 'rgba(255,255,255,0.06)'};` +
             `border-radius:8px;`;
 
-          // ラジオボタン
           const radio = ce('input', '', row);
           radio.type = 'radio';
           radio.name = '__cs_pack_active';
           radio.checked = isActive;
           radio.style.cssText = 'accent-color:#3b82f6;cursor:pointer;flex-shrink:0;';
-          radio.onchange = () => {
-            st._activePackId = null; // apply() にリロードさせる
-            Mods.ss('texturepack', 'activePackId', p.id);
+          radio.onchange = async () => {
+            await st._setActivePack(p.id);   // ★ flush 込み
             mask.remove();
-            st._toast('Switching to: ' + p.name, '#93c5fd');
+            st._toast('Switched to: ' + p.name, '#93c5fd');
           };
 
-          // 情報
           const info = ce('div', '', row);
           info.style.cssText = 'flex:1;min-width:0;';
 
@@ -6062,13 +6087,10 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
                 ? (p.size / 1024).toFixed(1) + ' KB'
                 : (p.size / 1024 / 1024).toFixed(2) + ' MB')
             : '?';
-          const date = p.createdAt
-            ? new Date(p.createdAt).toLocaleDateString()
-            : '?';
+          const date = p.createdAt ? new Date(p.createdAt).toLocaleDateString() : '?';
           meta.textContent = `${entryCount} entries · ${sizeTxt} · ${date}`;
           meta.style.cssText = 'font-size:11px;color:#8a8d96;margin-top:2px;';
 
-          // ACTIVE バッジ
           if (isActive) {
             const badge = ce('div', '', row);
             badge.textContent = 'ACTIVE';
@@ -6077,7 +6099,6 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
               'padding:2px 8px;border-radius:4px;flex-shrink:0;';
           }
 
-          // 削除ボタン
           const delBtn = ce('button', 'ac-btn secondary', row);
           delBtn.textContent = 'Delete';
           delBtn.style.cssText =
@@ -6085,19 +6106,13 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           delBtn.onclick = async () => {
             if (!confirm(`Delete pack "${p.name}"?`)) return;
             try { await st._tdb.del(p.id); } catch (_) {}
-            if (p.id === st._activePackId) {
-              Mods.ss('texturepack', 'activePackId', null);
-              st._activePackId = null;
-              await st._loadActivePack();
-              await st._refreshSceneTextures();
-            }
+            if (p.id === st._activePackId) await st._setActivePack(null);
             mask.remove();
             st._openManage();
           };
         }
       }
 
-      // フッター
       const actions = ce('div', '', box);
       actions.style.cssText =
         'display:flex;gap:8px;justify-content:flex-end;margin-top:16px;';
@@ -6131,16 +6146,19 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       el._h = setTimeout(() => { el.style.opacity = '0'; }, 3000);
     },
 
+    // ★ apply は「id 変化」or「pack 未読込」で再試行
     apply(enabled) {
       const st = this;
       if (!enabled) return;
-      // Config 側で activePackId が変わっていたらロードし直す
+
       const id = Mods.gs('texturepack', 'activePackId', null);
+
       if (id !== st._activePackId) {
-        st._activePackId = id;
+        st._setActivePack(id);
+      } else if (id && !st._loaded) {
+        // 同じ id だが pack 未読込 → 再試行
         st._loadActivePack().then(() => {
-          if (Object.keys(st._activePack).length > 0)
-            st._refreshSceneTextures().catch(() => {});
+          if (st._loaded) st._refreshSceneTextures().catch(() => {});
         });
       }
     },
