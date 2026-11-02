@@ -356,7 +356,26 @@
           }, 1500);
         }
       },
-      killAll() { O.forEach(id => { const m = R.get(id); try { m.destroy && m.destroy.call(m); } catch (e) {} }); }
+ killAll() { O.forEach(id => { const m = R.get(id); try { m.destroy && m.destroy.call(m); } catch (e) {} }); },
+reinit(id) {
+  const m = R.get(id);
+  if (!m) return false;
+  try { m.destroy && m.destroy.call(m); } catch (_) {}
+  m._r = false; m._retryCount = 0;
+  try { Mods.bootMod(m); return true; } catch (_) { return false; }
+},
+onWorldChange(w, prev) {
+  O.slice().forEach(id => {
+    const m = R.get(id);
+    if (!m || !Mods.on(id)) return;
+    if (m._r) {
+      try { Mods.apply(id); } catch (_) {}
+    } else {
+      m._retryCount = 0;
+      try { Mods.bootMod(m); } catch (_) {}
+    }
+  });
+}
     };
   })();
 
