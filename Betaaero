@@ -525,7 +525,13 @@
       if (n === 'zombie' || n === 'skeleton' || n === 'creeper' || n === 'spider' || n === 'enderman' || n === 'villager' || n === 'pig' || n === 'cow' || n === 'chicken') return false;
       return true;
     }
-    return { world, camera, pos, players, mobs, isPlayerEntity, get epoch() { return _wEpoch; } };
+const _worldListeners = new Set();
+return {
+  world, camera, pos, players, mobs, isPlayerEntity,
+  get epoch() { return _wEpoch; },
+  onWorldChange(fn) { _worldListeners.add(fn); return () => _worldListeners.delete(fn); },
+  _fireWorldChange(w, prev) { _worldListeners.forEach(fn => { try { fn(w, prev); } catch (_) {} }); }
+};
   })();
 
   /* ===== Physics ===== */
