@@ -9037,9 +9037,21 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
   })();
 
   /* ===== Detection ===== */
-  setInterval(() => {
-    const w = Game.world();
-    const homeEl = document.querySelector('.home');
+let _lastWorldRef = null;
+let _lastEpochRef = -1;
+setInterval(() => {
+  const w = Game.world();
+  const ep = Game.epoch;
+  if (w !== _lastWorldRef || ep !== _lastEpochRef) {
+    const prev = _lastWorldRef;
+    _lastWorldRef = w;
+    _lastEpochRef = ep;
+    if (w && w !== prev) {
+      try { Game._fireWorldChange(w, prev); } catch (_) {}
+      try { Mods.onWorldChange(w, prev); } catch (_) {}
+    }
+  }
+  const homeEl = document.querySelector('.home');
     let hv = false;
     if (homeEl) {
       const r = homeEl.getBoundingClientRect();
