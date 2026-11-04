@@ -9085,30 +9085,53 @@ setInterval(() => {
   if (document.body) StatsInline.start();
   else document.addEventListener('DOMContentLoaded', () => StatsInline.start(), { once: true });
 
-  // v32.5: wait for the MineFun game world to be available before loading
-  // plugins. Plugins often touch Game.world() / DOM in init(), and the
-  // previous 50ms delay was too short on slow machines, causing
-  // intermittent "plugin didn't load" symptoms.
-  function waitForWorldReady(maxMs) {
-    return new Promise(resolve => {
-      const t0 = performance.now();
-      const check = () => {
-        if (Game.world() || performance.now() - t0 > maxMs) return resolve();
-        setTimeout(check, 150);
-      };
-      check();
-    });
-  }
-
+  // v32.6: プラグインを即座にロード（ワールド待たない）
+  // ワールド依存の init() は失敗しても、下のリトライtickerで復活する
   (async () => {
     try {
-      await new Promise(r => setTimeout(r, 200));
-      await waitForWorldReady(15000);
       const rs = await Plugins.runAll();
       rs.forEach(r => { if (!r.ok) console.warn('[Plugin] load failed:', r.id, r.error); });
       if (rs.length) console.log('[AeroClient] Plugins loaded:', rs.length);
     } catch (e) { console.warn('[Plugin] boot error', e); }
   })();
+
+  // v32.6: 全mod（ビルトイン + プラグイン）の継続的リトライ
+  //   ① 未初期化mod（init失敗 or world未準備）→ 500ms毎にbootMod強制リトライ
+  //   ② ワールド出現/変化時 → 既存modにも apply() を通知（modの内部pollingが
+  //      早期returnしている場合の保険）
+  let _modWatchWorld = null;
+  let _modWatchEpoch = -1;
+  let _modWatchFirstSeen = 0;
+  setInterval(() => {
+    const w = Game.world();
+    const ep = Game.epoch;
+    const worldChanged = (w !== _modWatchWorld) || (ep !== _modWatchEpoch);
+    if (worldChanged) {
+      const prev = _modWatchWorld;
+      _modWatchWorld = w;
+      _modWatchEpoch = ep;
+      if (w && w !== prev) {
+        if (!_modWatchFirstSeen) _modWatchFirstSeen = performance.now();
+        console.log('%c[AeroClient] ワールド出現検知 → mods 再適用', 'color:#93c5fd;font-weight:bold');
+      }
+    }
+
+    Mods.all().forEach(m => {
+      if (!m || !Mods.on(m.id)) return;
+      if (!m._r) {
+        // 未初期化mod：ワールド出現後なら強制リトライ（retryCountをリセットして
+        //  AeroClientの20回諦め制限を無効化）
+        if (w) {
+          m._retryCount = 0;
+          try { Mods.bootMod(m); } catch (_) {}
+        }
+      } else if (worldChanged && w) {
+        // 初期化済みmod：ワールド変化時は apply() で mod自身に再チェックさせる
+        // （hitbox3d等が _tryInit() を再実行する）
+        try { Mods.apply(m.id); } catch (_) {}
+      }
+    });
+  }, 500);
   const MAX_HOLD = 350;
   let modCode = null, modDownAt = 0, comboUsed = false;
   const MODS_SET = new Set(['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight']);
