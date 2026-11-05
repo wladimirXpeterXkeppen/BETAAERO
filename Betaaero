@@ -292,7 +292,11 @@
       all: () => O.map(i => R.get(i)),
       cat: c => O.map(i => R.get(i)).filter(m => m.category === c),
       on: id => !!Config.get('mods.' + id + '.__enabled'),
-      toggle(id) { Config.set('mods.' + id + '.__enabled', !Mods.on(id)); Mods.apply(id); },
+      toggle(id) {
+        Config.set('mods.' + id + '.__enabled', !Mods.on(id));
+        try { Config.flush(); } catch (_) {}
+        Mods.apply(id);
+      },
       gs(id, k, f) { return Config.get('mods.' + id + '.' + k, f); },
       ss(id, k, v) {
         Config.set('mods.' + id + '.' + k, v);
@@ -303,6 +307,7 @@
             const inv = R.get('invcustomizer'); if (inv) inv._lastPreset = 'custom';
           }
         }
+        try { Config.flush(); } catch (_) {}
         Mods.apply(id);
       },
       apply(id) {
