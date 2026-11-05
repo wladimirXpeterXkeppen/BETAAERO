@@ -8487,7 +8487,13 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       if (s.type === 'toggle') {
         const b = ce('button', 'ac-toggle-mini' + (v ? ' on' : ''), row);
         b.style.marginLeft = 'auto';
-        b.onclick = () => { Mods.ss(m.id, s.id, !v); b.classList.toggle('on'); };
+        b.onclick = () => {
+          // 毎回 config から現在値を読み直す（クロージャの v は使わない）
+          const cur = !!Mods.gs(m.id, s.id, s.default);
+          const next = !cur;
+          Mods.ss(m.id, s.id, next);
+          b.classList.toggle('on', next);
+        };
       } else if (s.type === 'slider') {
         const r = ce('input', '', row);
         r.type = 'range'; r.min = s.min; r.max = s.max; r.step = s.step || 1; r.value = v;
