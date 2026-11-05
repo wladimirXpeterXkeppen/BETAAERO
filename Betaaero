@@ -2883,9 +2883,8 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         if (state.rafId) { cancelAnimationFrame(state.rafId); state.rafId = 0; }
         state.hudEl = null;
       }
-    }), 'KeyV');
+    });
   })();
-
   /* ===== MOD: Chat Translator ===== */
   (function () {
     const MOD_ID = 'chat-translator';
