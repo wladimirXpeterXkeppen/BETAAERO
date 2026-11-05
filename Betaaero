@@ -9390,11 +9390,20 @@ setInterval(() => {
     }
   };
 
+  // debounce 中のタブクローズで設定が消えるのを防ぐ
+  window.addEventListener('beforeunload', () => {
+    try { Config.flush(); } catch (_) {}
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { try { Config.flush(); } catch (_) {} }
+  });
+
   console.log('%c✦ AeroClient v32.4.0 BETA', 'color:#93c5fd;font-weight:bold;font-size:13px;background:#0f0f11;padding:4px 8px;border-radius:4px');
   console.log('  Start: R-Shift / F8');
   console.log('  Mods:', Mods.all().length);
   console.log('  + Canvas Resize Fix built into core');
   console.log('  + Screenshot: HUD restore bug fixed (MP3 / Compass)');
   console.log('  + Keybind: Debug entry removed');
+  console.log('  + Config: .bak fallback + beforeunload flush');
   console.log('  Storage: ac.cfg.v29 (+ .bak) / ac-plugins-db / ac-db');
 })();
