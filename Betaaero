@@ -234,7 +234,10 @@
         console.warn('[Config] save failed (quota exceeded?):', e);
       }
     }
-    function sch() { clearTimeout(tm); tm = setTimeout(save, 600); }
+    function sch() {
+      if (tm) return;
+      tm = setTimeout(() => { tm = null; save(); }, 500);
+    }
     function notify(p, v) {
       _listeners.forEach(fn => { try { fn(p, v); } catch (e) { console.warn('[Config.onChange]', e); } });
     }
