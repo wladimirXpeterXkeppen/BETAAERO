@@ -4261,9 +4261,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
         if (now - lastCheck < interval) return;
         lastCheck = now;
         const n = (s.gridSize === 32) ? 32 : 16;
-        if (s.adaptive) {
-          if (!Mods.on('hitbox')) Reach.update();
-          const target = Reach.cur.target;
+　　　　　if (s.adaptive) {
+　　　　　  Reach.update();
+　　　　　  const target = Reach.cur.target;
           if (!st._dirty && target === st._lastTarget) return;
           st._lastTarget = target;
           st._dirty = false;
