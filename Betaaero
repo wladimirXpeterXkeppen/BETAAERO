@@ -2755,7 +2755,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     }
 
     /* ---- Registration ---- */
-    attachKeybind(Mods.reg({
+    Mods.reg({
       id: 'speedometer',
       name: 'Speedometer',
       category: 'HUD',
