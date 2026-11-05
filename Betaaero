@@ -230,7 +230,9 @@
         const cur = localStorage.getItem(K);
         if (cur) localStorage.setItem(K + '.bak', cur);
         localStorage.setItem(K, JSON.stringify(d));
-      } catch (e) {}
+      } catch (e) {
+        console.warn('[Config] save failed (quota exceeded?):', e);
+      }
     }
     function sch() { clearTimeout(tm); tm = setTimeout(save, 600); }
     function notify(p, v) {
@@ -239,7 +241,13 @@
     return {
       load() {
         let s = null;
+        // ① primary を読む
         try { s = JSON.parse(localStorage.getItem(K) || 'null'); } catch (e) {}
+        // ② primary が無効/存在しない → .bak にフォールバック
+        if (!isObj(s)) {
+          try { s = JSON.parse(localStorage.getItem(K + '.bak') || 'null'); } catch (_) {}
+          if (isObj(s)) console.warn('[Config] primary invalid → restored from .bak');
+        }
         d = base();
         if (isObj(s)) {
           const m = (a, b) => { for (const k in b) { if (isObj(b[k]) && isObj(a[k])) m(a[k], b[k]); else a[k] = b[k]; } };
