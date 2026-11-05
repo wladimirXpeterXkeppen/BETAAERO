@@ -4775,7 +4775,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     }
   });
 })();
-})();  /* ===== MOD: Inventory Customizer ===== */
+/* ===== MOD: Inventory Customizer ===== */
   Mods.reg({
     id: 'invcustomizer', name: 'Inventory Customizer', category: 'Visual', icon: 'svg:gridPanels', description: 'Restyle inventory / chest / hotbar panels', defaultEnabled: false,
     settings: [
