@@ -352,6 +352,8 @@
       },
       boot() {
         O.slice().forEach(id => { const m = R.get(id); if (m && !m._r) Mods.bootMod(m); });
+        // ★ 追加: 起動直後に必ず保存（デフォルト値の永続化）
+        try { Config.flush(); } catch (_) {}
         // v32.5: retry loop for mods whose init failed on the first pass.
         // Runs every 1.5s until every registered mod has booted or 20 tries.
         if (!Mods._bootRetryId) {
