@@ -4457,23 +4457,23 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     name: 'Hitbox 3D',
     category: 'Gameplay',
     icon: 'svg:boundingBox',
-    description: '3D ヒットボックス（通常=白 / 照準=黄 / リーチ内=赤）',
+    description: '3D hitboxes (normal=white / aimed=yellow / in-reach=red)',
     defaultEnabled: false,
     settings: [
-      { id: 'showSelf',       type: 'toggle', label: '自分を表示',                default: false },
-      { id: 'showPlayers',    type: 'toggle', label: 'プレイヤーを表示',           default: true },
-      { id: 'showMobs',       type: 'toggle', label: 'モブを表示',                default: true },
-      { id: 'hideSpectators', type: 'toggle', label: '観戦者/死者を隠す',          default: true },
-      { id: 'onlyTarget',     type: 'toggle', label: '照準ターゲットのみ表示',     default: false },
-      { id: 'lineWidthPx',       type: 'slider', label: '線の太さ（基準距離にて px）', min: 1, max: 8, step: 1, default: 2 },
-      { id: 'referenceDistance', type: 'slider', label: '  基準距離 (m)',          min: 1, max: 30, step: 1, default: 5 },
-      { id: 'opacity',        type: 'slider', label: '不透明度',                  min: 0.2, max: 1, step: 0.05, default: 0.95 },
-      { id: 'colorSelf',      type: 'color',  label: '自分の色',                  default: '#ffcc00' },
-      { id: 'colorNormal',    type: 'color',  label: '通常の色',                  default: '#ffffff' },
-      { id: 'colorAiming',    type: 'color',  label: '照準の色（リーチ外）',       default: '#ffcc00' },
-      { id: 'colorReach',     type: 'color',  label: 'リーチ内の色',              default: '#ff2222' },
-      { id: 'reachDistance',  type: 'slider', label: 'リーチ距離 (m)',            min: 1, max: 8, step: 0.1, default: 3.0 },
-      { id: 'debugLog',       type: 'toggle', label: 'デバッグログ',              default: false }
+      { id: 'showSelf',       type: 'toggle', label: 'Show self',                     default: false },
+      { id: 'showPlayers',    type: 'toggle', label: 'Show players',                  default: true },
+      { id: 'showMobs',       type: 'toggle', label: 'Show mobs',                     default: true },
+      { id: 'hideSpectators', type: 'toggle', label: 'Hide spectators / dead',        default: true },
+      { id: 'onlyTarget',     type: 'toggle', label: 'Only show aimed target',        default: false },
+      { id: 'lineWidthPx',       type: 'slider', label: 'Line width (px at ref. distance)', min: 1, max: 8, step: 1, default: 2 },
+      { id: 'referenceDistance', type: 'slider', label: '  Reference distance (m)',   min: 1, max: 30, step: 1, default: 5 },
+      { id: 'opacity',        type: 'slider', label: 'Opacity',                       min: 0.2, max: 1, step: 0.05, default: 0.95 },
+      { id: 'colorSelf',      type: 'color',  label: 'Self color',                    default: '#ffcc00' },
+      { id: 'colorNormal',    type: 'color',  label: 'Normal color',                  default: '#ffffff' },
+      { id: 'colorAiming',    type: 'color',  label: 'Aiming color (out of reach)',   default: '#ffcc00' },
+      { id: 'colorReach',     type: 'color',  label: 'In-reach color',                default: '#ff2222' },
+      { id: 'reachDistance',  type: 'slider', label: 'Reach distance (m)',            min: 1, max: 8, step: 0.1, default: 3.0 },
+      { id: 'debugLog',       type: 'toggle', label: 'Debug log',                     default: false }
     ],
 
     init() {
@@ -4733,9 +4733,9 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
           st._lastLogTime = now;
           st._log(
             `sync=${st._syncCount} render=${st._renderCount}`,
-            `取得=${rawPlayerCount} エンティティ=${ents.length} 表示=${alive.size} メッシュ=${st._meshes.size}`,
-            `観戦者隠す=${hideSpec ? 'ON' : 'OFF'} 除外=${excludedSpec}`,
-            `照準=${target ? 'Y(' + bestT.toFixed(2) + 'm)' : 'N'} リーチ=${reachDistance}m 内=${inReach ? 'Y' : 'N'}`
+            `players=${rawPlayerCount} entities=${ents.length} shown=${alive.size} meshes=${st._meshes.size}`,
+            `hideSpectators=${hideSpec ? 'ON' : 'OFF'} excluded=${excludedSpec}`,
+            `aim=${target ? 'Y(' + bestT.toFixed(2) + 'm)' : 'N'} reach=${reachDistance}m in=${inReach ? 'Y' : 'N'}`
           );
         }
       };
@@ -4774,6 +4774,7 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
       Object.assign(st, { _ready: false, _renderer: null, _origRender: null, _hookedFn: null, _classes: null, _overlay: null, _gameScene: null });
     }
   });
+})();
 })();  /* ===== MOD: Inventory Customizer ===== */
   Mods.reg({
     id: 'invcustomizer', name: 'Inventory Customizer', category: 'Visual', icon: 'svg:gridPanels', description: 'Restyle inventory / chest / hotbar panels', defaultEnabled: false,
