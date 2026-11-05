@@ -4317,281 +4317,464 @@ body.ac-editing .ac-hud:hover{outline-color:#e8d8a8!important;background:rgba(23
     }
   });
 
-  /* ===== MOD: Hitbox ===== */
+/* ===== MOD: Hitbox 3D (Three.js renderer hook) ===== */
+(function() {
+  const MOD_ID = 'hitbox';
+  const DEFAULTS = {
+    showSelf: false, showPlayers: true, showMobs: true, hideSpectators: true, onlyTarget: false,
+    lineWidthPx: 2, referenceDistance: 5, opacity: 0.95,
+    colorSelf: '#ffcc00', colorNormal: '#ffffff', colorAiming: '#ffcc00', colorReach: '#ff2222',
+    reachDistance: 3.0, debugLog: false
+  };
+
+  const unwrap = (o) => { let c=o; for(let i=0;i<10;i++){const r=c&&(c.__v_raw||c._rawValue); if(!r||r===c)break; c=r;} return c; };
+  const toInt = (hex) => { if (typeof hex!=='string') return 0xffffff; return parseInt(hex.replace('#',''),16)||0xffffff; };
+  const rndId = () => Math.random().toString(36).slice(2);
+
+  function extractClasses(root) {
+    let BG, BA, Mesh, Mat, Scene;
+    const q = [root];
+    while (q.length) {
+      let r; try { r = unwrap(q.shift()); } catch(_) { continue; }
+      if (!r) continue;
+      if (r.isMesh && !Mesh) Mesh = r.constructor;
+      if (r.isScene && !Scene) Scene = r.constructor;
+      try {
+        const g = r.geometry;
+        if (g && g.constructor) {
+          const t = new (g.constructor)();
+          if (t.isBufferGeometry && !t.isInstancedBufferGeometry) BG = g.constructor;
+          try { t.dispose?.(); } catch(_) {}
+          if (g.attributes) for (const k in g.attributes) {
+            if (g.attributes[k]?.constructor) { BA = g.attributes[k].constructor; break; }
+          }
+        }
+      } catch(_) {}
+      try {
+        const m = Array.isArray(r.material) ? r.material[0] : r.material;
+        if (m?.type === 'MeshBasicMaterial') Mat = m.constructor;
+      } catch(_) {}
+      try { r.children?.forEach?.(c => q.push(c)); } catch(_) {}
+    }
+    return { BG, BA, Mesh, Mat, Scene };
+  }
+
+  function makeEdgesGeometry(cls) {
+    const geo = new cls.BG();
+    const positions = new Float32Array(12 * 8 * 3);
+    const indices = new Uint16Array(12 * 36);
+    let i = 0;
+    for (let b = 0; b < 12; b++) {
+      const base = b * 8;
+      for (const v of [0,1,2, 0,2,3, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 2,3,7, 2,7,6, 0,3,7, 0,7,4, 1,2,6, 1,6,5]) indices[i++] = base + v;
+    }
+    geo.setAttribute('position', new cls.BA(positions, 3));
+    geo.setIndex(new cls.BA(indices, 1));
+    try { geo.computeBoundingSphere?.(); } catch(_) {}
+    return geo;
+  }
+
+  function updateEdgesGeometry(geo, pos, hb, yOffset, worldThickness) {
+    const arr = geo.attributes.position.array;
+    const minX = pos.x - hb.w/2, maxX = pos.x + hb.w/2;
+    const minY = pos.y + yOffset,      maxY = pos.y + yOffset + hb.h;
+    const minZ = pos.z - hb.d/2, maxZ = pos.z + hb.d/2;
+    const cx = (minX + maxX) * 0.5, cy = (minY + maxY) * 0.5, cz = (minZ + maxZ) * 0.5;
+    const halfW = (maxX - minX) * 0.5, halfH = (maxY - minY) * 0.5, halfD = (maxZ - minZ) * 0.5;
+    const t = Math.max(0.0005, worldThickness);
+    let off = 0;
+    const writeBox = (bx, by, bz, sx, sy, sz) => {
+      for (const [dx, dy, dz] of [
+        [-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],
+        [-1,-1, 1],[1,-1, 1],[1,1, 1],[-1,1, 1]
+      ]) {
+        arr[off++] = bx + dx * sx;
+        arr[off++] = by + dy * sy;
+        arr[off++] = bz + dz * sz;
+      }
+    };
+    for (const [y, z] of [[maxY, maxZ],[maxY, minZ],[minY, maxZ],[minY, minZ]]) writeBox(cx, y, z, halfW + t, t, t);
+    for (const [x, z] of [[maxX, maxZ],[minX, maxZ],[maxX, minZ],[minX, minZ]]) writeBox(x, cy, z, t, halfH + t, t);
+    for (const [x, y] of [[maxX, maxY],[minX, maxY],[maxX, minY],[minX, minY]]) writeBox(x, y, cz, t, t, halfD + t);
+    geo.attributes.position.needsUpdate = true;
+    try { geo.computeBoundingSphere?.(); } catch(_) {}
+  }
+
+  function readPos(p) {
+    if (!p) return null;
+    try { const lp = p.physicsPosComp?.lerpPosTo; if (lp && typeof lp.x==='number' && isFinite(lp.x)) return {x:+lp.x,y:+lp.y,z:+lp.z}; } catch(_) {}
+    try { const pos = p.threeObject?.position; if (pos && typeof pos.x==='number' && isFinite(pos.x)) return {x:+pos.x,y:+pos.y,z:+pos.z}; } catch(_) {}
+    try { const pos = p.model?.position || p._model?.position || p.position; if (pos && typeof pos.x==='number' && isFinite(pos.x)) return {x:+pos.x,y:+pos.y,z:+pos.z}; } catch(_) {}
+    return null;
+  }
+  function readHitbox(p) {
+    try {
+      const hb = p.mobRawData?.hitboxData;
+      if (hb && typeof hb.width==='number') {
+        let yOff = 0;
+        try { const g = hb.getHitbox?.(); if (g) yOff = g.hitboxMinYOffset || 0; } catch(_) {}
+        return { w: hb.width, h: hb.height || 1.8, d: hb.depth || hb.width, yOff };
+      }
+    } catch(_) {}
+    return { w: 0.6, h: 1.8, d: 0.6, yOff: 0 };
+  }
+  const sVal = (v) => { try { return v==null?'':String(typeof v==='object'?(v.name||v.id||v.type||''):v).toLowerCase(); } catch(_) { return ''; } };
+
+  function isSpectator(p) {
+    if (!p) return true;
+    const chk = (fn) => { try { return fn(); } catch(_) { return false; } };
+    if (chk(() => p.isAlive === false)) return true;
+    if (chk(() => p.alive === false)) return true;
+    if (chk(() => p.dead === true || p.isDead === true)) return true;
+    if (chk(() => p.isSpectator === true)) return true;
+    if (chk(() => p.spectating === true || p.isSpectating === true)) return true;
+    if (chk(() => typeof p.health === 'number' && p.health <= 0)) return true;
+    if (chk(() => typeof p.hp === 'number' && p.hp <= 0)) return true;
+    const gm = chk(() => sVal(p.gameMode)) || '';
+    if (gm.includes('spectat') || gm === 'dead') return true;
+    const role = chk(() => sVal(p.role)) || '';
+    if (role.includes('spectat')) return true;
+    return false;
+  }
+
+  function rayAABB(ox,oy,oz,dx,dy,dz,minX,minY,minZ,maxX,maxY,maxZ,far) {
+    let tmin=0, tmax=far;
+    for (const [o,d,mn,mx] of [[ox,dx,minX,maxX],[oy,dy,minY,maxY],[oz,dz,minZ,maxZ]]) {
+      if (Math.abs(d)<1e-9) { if (o<mn || o>mx) return -1; }
+      else {
+        let t1=(mn-o)/d, t2=(mx-o)/d;
+        if (t1>t2) { const t=t1; t1=t2; t2=t; }
+        if (t1>tmin) tmin=t1;
+        if (t2<tmax) tmax=t2;
+        if (tmin>tmax) return -1;
+      }
+    }
+    return tmax<0?-1:tmin;
+  }
+
   Mods.reg({
-    id: 'hitbox', name: 'Hitbox', category: 'Gameplay', icon: 'svg:boundingBox', description: 'Crosshair-center reach + per-entity DDA occlusion', defaultEnabled: false,
+    id: MOD_ID,
+    name: 'Hitbox 3D',
+    category: 'Gameplay',
+    icon: 'svg:boundingBox',
+    description: '3D ヒットボックス（通常=白 / 照準=黄 / リーチ内=赤）',
+    defaultEnabled: false,
     settings: [
-      { id: 'fpsMode', type: 'dropdown', label: 'FPS mode', options: [{ value: 'unlimited', label: 'Unlimited' }, { value: 'high', label: 'High (60)' }, { value: 'normal', label: 'Normal (30)' }, { value: 'low', label: 'Light (15)' }], default: 'unlimited' },
-      // v32.5: ddaOcclusion removed — DDA occlusion is now always enforced
-      // so hitboxes never show through walls (no ESP).
-      { id: 'smoothPositions', type: 'toggle', label: 'Smooth positions (lerpPosTo)', default: true },
-      { id: 'showPlayers', type: 'toggle', label: 'Players', default: true },
-      { id: 'showMobs', type: 'toggle', label: 'Mobs', default: false },
-      { id: 'showSelf', type: 'toggle', label: 'Self', default: false },
-      { id: 'renderMode', type: 'dropdown', label: 'Render mode', options: [{ value: 'wireframe', label: 'Wireframe' }, { value: 'solid', label: 'Solid' }, { value: 'both', label: 'Both' }], default: 'wireframe' },
-      { id: 'lineWidth', type: 'slider', label: 'Line width', min: 0.5, max: 4, step: 0.5, default: 2 },
-      { id: 'playerColor', type: 'color', label: 'Player color', default: '#00ff88' },
-      { id: 'mobColor', type: 'color', label: 'Mob color', default: '#ffaa00' },
-      { id: 'reachColor', type: 'color', label: 'Reach color', default: '#ff5577' },
-      { id: 'playerFillAlpha', type: 'slider', label: 'Player fill alpha', min: 0, max: 60, step: 1, default: 25 },
-      { id: 'reachFillAlpha', type: 'slider', label: 'Reach fill alpha', min: 0, max: 70, step: 1, default: 45 },
-      { id: 'reachMode', type: 'toggle', label: 'Reach highlight', default: true },
-      { id: 'reachDistance', type: 'slider', label: 'Reach distance', min: 1, max: 6, step: 0.1, default: 3.0 },
-      { id: 'showVertices', type: 'toggle', label: 'Vertex dots', default: false },
-      { id: 'glowReach', type: 'toggle', label: 'Reach glow', default: false },
-      { id: 'maxDistance', type: 'slider', label: 'Max distance', min: 2, max: 16, step: 1, default: 8 }
+      { id: 'showSelf',       type: 'toggle', label: '自分を表示',                default: false },
+      { id: 'showPlayers',    type: 'toggle', label: 'プレイヤーを表示',           default: true },
+      { id: 'showMobs',       type: 'toggle', label: 'モブを表示',                default: true },
+      { id: 'hideSpectators', type: 'toggle', label: '観戦者/死者を隠す',          default: true },
+      { id: 'onlyTarget',     type: 'toggle', label: '照準ターゲットのみ表示',     default: false },
+      { id: 'lineWidthPx',       type: 'slider', label: '線の太さ（基準距離にて px）', min: 1, max: 8, step: 1, default: 2 },
+      { id: 'referenceDistance', type: 'slider', label: '  基準距離 (m)',          min: 1, max: 30, step: 1, default: 5 },
+      { id: 'opacity',        type: 'slider', label: '不透明度',                  min: 0.2, max: 1, step: 0.05, default: 0.95 },
+      { id: 'colorSelf',      type: 'color',  label: '自分の色',                  default: '#ffcc00' },
+      { id: 'colorNormal',    type: 'color',  label: '通常の色',                  default: '#ffffff' },
+      { id: 'colorAiming',    type: 'color',  label: '照準の色（リーチ外）',       default: '#ffcc00' },
+      { id: 'colorReach',     type: 'color',  label: 'リーチ内の色',              default: '#ff2222' },
+      { id: 'reachDistance',  type: 'slider', label: 'リーチ距離 (m)',            min: 1, max: 8, step: 0.1, default: 3.0 },
+      { id: 'debugLog',       type: 'toggle', label: 'デバッグログ',              default: false }
     ],
+
     init() {
       const st = this;
-      const canvas = document.createElement('canvas');
-      canvas.id = 'ac-hitbox-canvas';
-      canvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:2147483200;display:block;';
-      document.body.appendChild(canvas);
-      st._canvas = canvas;
-      st._ctx = canvas.getContext('2d');
-      function resize() {
-        const dpr = Math.min(devicePixelRatio || 1, 2);
-        canvas.width = innerWidth * dpr;
-        canvas.height = innerHeight * dpr;
-        canvas.style.width = innerWidth + 'px';
-        canvas.style.height = innerHeight + 'px';
-        st._ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      }
-      resize();
-      window.addEventListener('resize', resize);
-      st._resize = resize;
-      st._matInv = null; st._matProj = null; st._projBuf = null;
-      function espProject(wx, wy, wz, out) {
-        if (!st._matInv || !st._matProj) return null;
-        const ve = st._matInv, pj = st._matProj;
-        const vx = ve[0] * wx + ve[4] * wy + ve[8] * wz + ve[12];
-        const vy = ve[1] * wx + ve[5] * wy + ve[9] * wz + ve[13];
-        const vz = ve[2] * wx + ve[6] * wy + ve[10] * wz + ve[14];
-        const vw = ve[3] * wx + ve[7] * wy + ve[11] * wz + ve[15];
-        if (vw < 1e-4 && vw > -1e-4) return null;
-        const cx = pj[0] * vx + pj[4] * vy + pj[8] * vz + pj[12];
-        const cy = pj[1] * vx + pj[5] * vy + pj[9] * vz + pj[13];
-        const cw = pj[3] * vx + pj[7] * vy + pj[11] * vz + pj[15];
-        if (cw < 1e-4) return null;
-        const iw = 1 / cw;
-        out.x = (cx * iw * 0.5 + 0.5) * innerWidth;
-        out.y = (1 - (cy * iw * 0.5 + 0.5)) * innerHeight;
-        return out;
-      }
-      const _c = [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }];
-      const OFFS = [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1], [-1, 1, -1], [1, 1, -1], [1, 1, 1], [-1, 1, 1]];
-          function drawBox(p, half, isReach, nc, rc, borderHex, mode, lw, showV, glow, reachBorder) {
-        const ctx = st._ctx;
-        const corners = [];
-        for (let i = 0; i < 8; i++) {
-          const o = _c[i];
-          const wx = p.x + OFFS[i][0] * half.x;
-          const wy = p.y + half.y + OFFS[i][1] * half.y;
-          const wz = p.z + OFFS[i][2] * half.z;
-          const pr = espProject(wx, wy, wz, o);
-          if (!pr) return;
-          corners.push(pr);
+      Object.assign(st, {
+        _ready: false, _renderer: null, _origRender: null, _hookedFn: null,
+        _injecting: false, _classes: null, _overlay: null,
+        _meshes: new Map(), _gameScene: null, _warned: false,
+        _matCache: new Map(), _lastLogTime: 0, _polling: false, _pollRaf: 0,
+        _renderCount: 0, _syncCount: 0
+      });
+
+      st._getCfg = () => {
+        try { const c = Config.get('mods.' + MOD_ID, null); if (c && typeof c === 'object') return c; } catch(_) {}
+        const fb = {};
+        for (const k in DEFAULTS) {
+          try { fb[k] = Mods.gs(MOD_ID, k, DEFAULTS[k]); } catch(_) { fb[k] = DEFAULTS[k]; }
         }
-        // v32.5: reachBorder lets the target's border be fully opaque
-        // while its fill stays semi-transparent.
-        const bc = isReach ? (reachBorder || rc) : borderHex;
-        const bw = isReach ? (lw + 1) : lw;
-        ctx.shadowColor = 'transparent';
-        ctx.shadowBlur = 0;
-        const faces = [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [0, 3, 7, 4], [1, 2, 6, 5]];
-        if (mode === 'solid' || mode === 'both') {
-          ctx.fillStyle = nc;
-          for (let f = 0; f < faces.length; f++) {
-            const fi = faces[f];
-            ctx.beginPath();
-            ctx.moveTo(corners[fi[0]].x, corners[fi[0]].y);
-            for (let v = 1; v < 4; v++) ctx.lineTo(corners[fi[v]].x, corners[fi[v]].y);
-            ctx.closePath();
-            ctx.fill();
+        return fb;
+      };
+      st._log = (...a) => { try { if (st._getCfg().debugLog) console.log('[Hitbox3D]', ...a); } catch(_) {} };
+
+      st._getMat = (colorInt, baseOp, alphaFactor) => {
+        const alpha = Math.max(0.05, Math.min(1, alphaFactor));
+        const bucket = Math.round(alpha * 20) / 20;
+        const key = colorInt + '_' + bucket.toFixed(2) + '_' + baseOp.toFixed(2);
+        let m = st._matCache.get(key);
+        if (m) return m;
+        m = new st._classes.Mat({
+          color: colorInt,
+          depthTest: true, depthWrite: false,
+          transparent: true, opacity: bucket * baseOp,
+          side: 2, fog: false
+        });
+        st._matCache.set(key, m);
+        return m;
+      };
+      st._clearMatCache = () => { st._matCache.forEach(m => { try { m.dispose?.(); } catch(_) {} }); st._matCache.clear(); };
+
+      st._tryInit = () => {
+        try {
+          const gw = Game.world();
+          if (!gw?.threeScene) return false;
+          const r = unwrap(gw.threeScene.renderer);
+          const s = unwrap(gw.threeScene.scene);
+          if (!r || !s || typeof r.render !== 'function') return false;
+          if (st._renderer && st._renderer !== r) {
+            if (st._renderer.render === st._hookedFn) { try { st._renderer.render = st._origRender; } catch(_) {} }
+            st._origRender = null; st._hookedFn = null;
           }
-        }
-        if (mode === 'wireframe' || mode === 'both') {
-          const edges = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
-          ctx.strokeStyle = bc;
-          ctx.lineWidth = bw;
-          for (let e = 0; e < edges.length; e++) {
-            const a = corners[edges[e][0]], b = corners[edges[e][1]];
-            ctx.beginPath();
-            ctx.moveTo(a.x, a.y);
-            ctx.lineTo(b.x, b.y);
-            ctx.stroke();
+          if (!st._classes) {
+            st._classes = extractClasses(s);
+            if (!st._classes.BG || !st._classes.BA || !st._classes.Mesh || !st._classes.Mat || !st._classes.Scene) {
+              st._classes = null; return false;
+            }
+            st._overlay = new st._classes.Scene();
           }
-        }
-        if (showV) {
-          ctx.fillStyle = isReach ? '#ff5577' : 'rgba(255,255,255,0.5)';
-          for (let d = 0; d < 8; d++) { ctx.beginPath(); ctx.arc(corners[d].x, corners[d].y, isReach ? 3.5 : 2, 0, Math.PI * 2); ctx.fill(); }
-        }
-        if (isReach && glow) {
-          let mnX = Infinity, mxX = -Infinity, mnY = Infinity, mxY = -Infinity;
-          for (let i = 0; i < 8; i++) {
-            const c = corners[i];
-            if (c.x < mnX) mnX = c.x; if (c.x > mxX) mxX = c.x;
-            if (c.y < mnY) mnY = c.y; if (c.y > mxY) mxY = c.y;
+          st._renderer = r; st._gameScene = s;
+          if (!st._hookedFn) {
+            const rendererRef = r;
+            st._origRender = r.render.bind(r);
+            st._hookedFn = function(scene, camera, ...rest) {
+              const rawScene = unwrap(scene);
+              const ret = st._origRender(scene, camera, ...rest);
+              const gw2 = Game.world();
+              const curScene = gw2?.threeScene ? unwrap(gw2.threeScene.scene) : null;
+              if (curScene && rawScene === curScene) st._gameScene = curScene;
+              if (rawScene === st._gameScene && !st._injecting && Mods.on(MOD_ID)) {
+                try { st._sync(camera, rendererRef); }
+                catch(e) { if (!st._warned) { console.warn('[Hitbox3D] sync error:', e); st._warned = true; } }
+                const gl = rendererRef.getContext();
+                const pa = rendererRef.autoClear, pd = rendererRef.autoClearDepth;
+                rendererRef.autoClear = false; rendererRef.autoClearDepth = false;
+                const pt = gl.isEnabled(gl.DEPTH_TEST);
+                const pm = gl.getParameter(gl.DEPTH_WRITEMASK);
+                gl.enable(gl.DEPTH_TEST); gl.depthMask(false);
+                st._injecting = true;
+                try { st._origRender(st._overlay, unwrap(camera)); st._renderCount++; }
+                finally {
+                  st._injecting = false;
+                  if (!pt) gl.disable(gl.DEPTH_TEST);
+                  gl.depthMask(pm);
+                  rendererRef.autoClear = pa; rendererRef.autoClearDepth = pd;
+                }
+              }
+              return ret;
+            };
+            r.render = st._hookedFn;
           }
-          ctx.shadowColor = '#ff5577';
-          ctx.shadowBlur = 20;
-          ctx.strokeStyle = 'rgba(255,85,119,0.15)';
-          ctx.lineWidth = 5;
-          ctx.strokeRect(mnX - 5, mnY - 5, mxX - mnX + 10, mxY - mnY + 10);
-          ctx.shadowColor = 'transparent';
-          ctx.shadowBlur = 0;
-        }
-      }
-      let lastDraw = 0;
-      st._raf = 0; st._running = false;
-      const loop = () => {
-        if (!Mods.on('hitbox')) { st._raf = 0; st._running = false; st._ctx.clearRect(0, 0, innerWidth, innerHeight); return; }
-        st._raf = requestAnimationFrame(loop);
-        const s = Config.get('mods.hitbox') || {};
-        const now = performance.now();
-        const interval = s.fpsMode === 'unlimited' ? 0 : (s.fpsMode === 'high' ? 16 : (s.fpsMode === 'low' ? 66 : 33));
-        if (interval > 0 && now - lastDraw < interval) return;
-        lastDraw = now;
-        const ctx = st._ctx;
-        ctx.clearRect(0, 0, innerWidth, innerHeight);
-        Reach.update();
-        const hit = Reach.cur;
-        const gw = Game.world();
-        if (!gw) return;
-        const me = gw.player;
-        if (!me || me.isAlive === false) return;
-        const cam = Game.camera();
-        if (!cam) return;
-        try { if (cam.matrixWorldInverse && cam.matrixWorldInverse.copy) cam.matrixWorldInverse.copy(cam.matrixWorld).invert(); } catch (_) {}
-        st._matInv = cam.matrixWorldInverse ? cam.matrixWorldInverse.elements : null;
-        // v32.5: The Zoom MOD patches the GPU-side projection through a
-        // uniformMatrix4fv interceptor, but does NOT touch the camera's own
-        // projectionMatrix object. To keep the projected boxes aligned with
-        // the rendered scene while zooming, we must apply the same 1/zoom
-        // factor to pj[0] and pj[5]. We copy into a scratch buffer so we
-        // never mutate the camera's real matrix.
-        const rawProj = cam.projectionMatrix ? cam.projectionMatrix.elements : null;
-        if (rawProj) {
-          let zScale = 1;
+          st._ready = true;
+          return true;
+        } catch(e) { console.warn('[Hitbox3D] _tryInit error:', e); return false; }
+      };
+
+      st._startPoll = () => {
+        if (st._polling) return;
+        st._polling = true;
+        const poll = () => {
+          st._pollRaf = requestAnimationFrame(poll);
+          if (!Mods.on(MOD_ID)) { st._ready = false; return; }
           try {
-            const zMod = Mods.get('zoom');
-            if (zMod && Mods.on('zoom') && typeof zMod._getScale === 'function') {
-              zScale = zMod._getScale() || 1;
-            }
-          } catch (_) {}
-          if (zScale !== 1) {
-            if (!st._projBuf || st._projBuf.length !== rawProj.length) {
-              st._projBuf = new Float32Array(rawProj.length);
-            }
-            st._projBuf.set(rawProj);
-            const f = 1 / zScale;
-            st._projBuf[0] *= f;
-            st._projBuf[5] *= f;
-            st._matProj = st._projBuf;
-          } else {
-            st._matProj = rawProj;
-          }
-        } else {
-          st._matProj = null;
-        }
-        if (!st._matInv || !st._matProj) return;
+            const gw = Game.world();
+            const r = gw?.threeScene?.renderer ? unwrap(gw.threeScene.renderer) : null;
+            if (!r) { st._ready = false; return; }
+            if (r !== st._renderer) { st._ready = false; st._tryInit(); return; }
+            if (st._hookedFn && r.render !== st._hookedFn) {
+              st._origRender = r.render.bind(r);
+              r.render = st._hookedFn;
+            } else if (!st._ready) st._tryInit();
+          } catch(_) {}
+        };
+        st._pollRaf = requestAnimationFrame(poll);
+      };
+
+      st._sync = (camera, rendererRef) => {
+        if (!st._classes || !st._overlay) return;
+        st._syncCount++;
+        const s = st._getCfg();
+        const showSelf = !!s.showSelf;
+        const showPlayers = s.showPlayers !== false;
+        const showMobs = s.showMobs !== false;
+        const hideSpec = s.hideSpectators !== false;
+        const onlyTarget = !!s.onlyTarget;
+        const lineWidthPx = s.lineWidthPx ?? 2;
+        const refDistance = s.referenceDistance ?? 5;
+        const baseOp = s.opacity ?? 0.95;
+        const reachDistance = s.reachDistance ?? 3.0;
+
+        const gw = Game.world(); if (!gw) return;
+        const cam = unwrap(camera || gw.threeScene?.camera);
+        if (!cam?.position || !cam.matrixWorld) return;
+        if (cam.updateMatrixWorld) cam.updateMatrixWorld();
         const camPos = cam.position;
-        if (!camPos) return;
-        const myP = Game.pos(me);
-        if (!myP) return;
-        const maxDist = s.maxDistance || 8;
-        const maxDistSq = maxDist * maxDist;
-        const mode = s.renderMode || 'wireframe';
-        const lw = s.lineWidth || 2;
-        const pc = hexA(s.playerColor || '#00ff88', (s.playerFillAlpha || 25) / 100);
-        const rc = hexA(s.reachColor || '#ff5577', (s.reachFillAlpha || 45) / 100);
-        // v32.5: reach target border. Opaque by default so it stands out
-        // even when the fill is semi-transparent. Falls back to the fill
-        // color when "Reach border opaque" is OFF.
-        const rcBorder = (s.reachBorderOpaque !== false)
-          ? (s.reachColor || '#ff5577')
-          : rc;
-        const selfId = me.sessionId || me.id;
-        // v32.5: DDA occlusion is always enforced. Even if a legacy config
-        // still has ddaOcclusion=false, we ignore it to prevent ESP.
-        const useOccl = true;
-        function getE(e) {
-          try { const lp = e && e.physicsPosComp && e.physicsPosComp.lerpPosTo; if (lp && typeof lp.x === 'number') return lp; } catch (_) {}
-          return Game.pos(e);
-        }
-        function getB(e) {
+
+        let fovTanHalf = 0.5;
+        try {
+          if (cam.fov && isFinite(cam.fov) && cam.fov > 0 && cam.fov < 180) fovTanHalf = Math.tan((cam.fov * Math.PI / 180) / 2);
+          else if (cam.projectionMatrix?.elements) { const p5 = cam.projectionMatrix.elements[5]; if (isFinite(p5) && p5 > 0) fovTanHalf = 1 / p5; }
+        } catch(_) {}
+        const viewportH = (rendererRef.domElement?.clientHeight) || innerHeight || 1080;
+        const dir = cam.getWorldDirection(new camPos.constructor(0,0,0));
+        const worldThickness = (lineWidthPx * refDistance * fovTanHalf) / viewportH;
+
+        const ents = [];
+        const me = unwrap(gw.player);
+        const localSid = me?.sessionId;
+        const seen = new Set();
+        let rawPlayerCount = 0;
+        let excludedSpec = 0;
+
+        if (showSelf && me) {
           try {
-            const hb = e && e.mobRawData && e.mobRawData.hitboxData;
-            if (hb && typeof hb.width === 'number') {
-              const w = hb.width, d = hb.depth || w, h = hb.height || 1.8;
-              let yo = 0;
-              try { const g = hb.getHitbox && hb.getHitbox(); if (g) yo = (g.hitboxMinYOffset || 0); } catch (_) {}
-              return { half: { x: w / 2, y: h / 2, z: d / 2 }, yOff: yo };
+            const pos = readPos(me);
+            if (pos && !isSpectator(me)) ents.push({ id:'p:self', kind:'self', pos, hb: readHitbox(me) });
+          } catch(_) {}
+        }
+        if (showPlayers) {
+          const addPlayer = (raw, mapKey) => {
+            try {
+              const p = unwrap(raw); if (!p) return;
+              if (seen.has(p)) return;
+              seen.add(p);
+              if (localSid && p.sessionId === localSid) return;
+              if (hideSpec && isSpectator(p)) { excludedSpec++; return; }
+              const pos = readPos(p); if (!pos) return;
+              const rawId = p.sessionId ?? mapKey ?? p.name;
+              const id = rawId != null ? ('p:' + String(rawId)) : ('p:' + rndId());
+              ents.push({ id, kind:'player', pos, hb: readHitbox(p) });
+            } catch(_) {}
+          };
+          try {
+            const ps = unwrap(gw.server?.players);
+            if (ps instanceof Map) { rawPlayerCount = ps.size; for (const [k, raw] of ps) addPlayer(raw, k); }
+            else if (Array.isArray(ps)) { rawPlayerCount = ps.length; for (const raw of ps) addPlayer(raw, null); }
+            else if (ps && typeof ps === 'object') { const ks = Object.keys(ps); rawPlayerCount = ks.length; for (const k of ks) addPlayer(ps[k], k); }
+          } catch(_) {}
+          try {
+            const sm = unwrap(gw.systemsManager);
+            if (sm?.activeSystems) for (const sys of sm.activeSystems) {
+              if (sys?.allPlayers?.forEach) sys.allPlayers.forEach(raw => addPlayer(raw, null));
             }
-          } catch (_) {}
-          return { half: { x: 0.3, y: 0.9, z: 0.3 }, yOff: 0 };
+          } catch(_) {}
         }
-        function isOccluded(pos, box) {
-          const nx = Math.max(pos.x - box.half.x, Math.min(camPos.x, pos.x + box.half.x));
-          const ny = Math.max(pos.y + box.yOff, Math.min(camPos.y, pos.y + box.yOff + box.half.y * 2));
-          const nz = Math.max(pos.z - box.half.z, Math.min(camPos.z, pos.z + box.half.z));
-          const dx = nx - camPos.x, dy = ny - camPos.y, dz = nz - camPos.z;
-          const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
-          if (len < 0.05) return false;
-          const ux = dx / len, uy = dy / len, uz = dz / len;
-          const wallT = Reach._rayMarchDistance(gw, camPos.x, camPos.y, camPos.z, ux, uy, uz, len - 0.15);
-          return wallT < len - 0.15;
+        if (showMobs) {
+          try {
+            const sm = unwrap(gw.systemsManager);
+            if (sm?.activeSystems) for (const sys of sm.activeSystems) {
+              if (sys?.allMobs?.forEach) sys.allMobs.forEach(raw => {
+                try {
+                  const m = unwrap(raw); if (!m || m.isDying) return;
+                  if (seen.has(m)) return; seen.add(m);
+                  if (hideSpec && isSpectator(m)) return;
+                  const pos = readPos(m); if (!pos) return;
+                  const rawId = m.id ?? m.uuid;
+                  const id = rawId != null ? ('m:' + String(rawId)) : ('m:' + rndId());
+                  ents.push({ id, kind:'mob', pos, hb: readHitbox(m) });
+                } catch(_) {}
+              });
+            }
+          } catch(_) {}
         }
-        function drawEntity(e, baseColor, borderHex, useReach) {
-          const p = getE(e);
-          if (!p) return;
-          const dx = p.x - myP.x, dy = p.y - myP.y, dz = p.z - myP.z;
-          const d2 = dx * dx + dy * dy + dz * dz;
-          if (d2 > maxDistSq) return;
-          const box = getB(e);
-          if (useOccl && isOccluded(p, box)) return;
-          const isReach = !!s.reachMode && useReach;
-          // v32.5: pass reachBorder so only the reach target's border can
-          // be fully opaque.
-          drawBox(p, box.half, isReach, baseColor, rc, borderHex, mode, lw, s.showVertices, s.glowReach, rcBorder);
+
+        let target = null, bestT = Infinity;
+        for (const e of ents) {
+          if (e.kind === 'self') continue;
+          const hb = e.hb;
+          const t = rayAABB(camPos.x, camPos.y, camPos.z, dir.x, dir.y, dir.z,
+            e.pos.x - hb.w/2, e.pos.y + hb.yOff, e.pos.z - hb.d/2,
+            e.pos.x + hb.w/2, e.pos.y + hb.yOff + hb.h, e.pos.z + hb.d/2, Infinity);
+          if (t >= 0 && t < bestT) { bestT = t; target = e; }
         }
-        if (s.showPlayers) {
-          const list = Game.players(gw);
-          for (let i = 0; i < list.length; i++) {
-            const e = list[i];
-            if (!e || e === me) continue;
-            if (e.sessionId === selfId || e.id === selfId) continue;
-            if (!Game.isPlayerEntity(e, me)) continue;
-            drawEntity(e, pc, s.playerColor, hit.target === e);
+        const inReach = !!(target && bestT <= reachDistance);
+
+        const colorSelf   = toInt(s.colorSelf   || '#ffcc00');
+        const colorNormal = toInt(s.colorNormal || '#ffffff');
+        const colorAiming = toInt(s.colorAiming || '#ffcc00');
+        const colorReach  = toInt(s.colorReach  || '#ff2222');
+
+        const alive = new Set();
+        for (const e of ents) {
+          if (onlyTarget && e !== target && e.kind !== 'self') continue;
+          const ecx = e.pos.x, ecy = e.pos.y + e.hb.yOff + e.hb.h * 0.5, ecz = e.pos.z;
+          const ed = Math.sqrt((ecx-camPos.x)**2 + (ecy-camPos.y)**2 + (ecz-camPos.z)**2);
+          if (ed < 1e-3) continue;
+          alive.add(e.id);
+          let entry = st._meshes.get(e.id);
+          if (!entry) {
+            try {
+              const geo = makeEdgesGeometry(st._classes);
+              const mesh = new st._classes.Mesh(geo, st._getMat(colorNormal, baseOp, 1));
+              mesh.frustumCulled = false;
+              st._overlay.add(mesh);
+              entry = { mesh, geo };
+              st._meshes.set(e.id, entry);
+            } catch(err) { continue; }
+          }
+          try { updateEdgesGeometry(entry.geo, e.pos, e.hb, e.hb.yOff, worldThickness); }
+          catch(_) { continue; }
+          const isSelf = e.kind === 'self';
+          const isTarget = e === target;
+          const color = isSelf                ? colorSelf
+                      : (isTarget && inReach) ? colorReach
+                      : isTarget              ? colorAiming
+                      : colorNormal;
+          try { entry.mesh.material = st._getMat(color, baseOp, 1); } catch(_) {}
+        }
+        for (const [id, entry] of st._meshes) {
+          if (!alive.has(id)) {
+            try { st._overlay.remove(entry.mesh); } catch(_) {}
+            try { entry.geo?.dispose?.(); } catch(_) {}
+            st._meshes.delete(id);
           }
         }
-        if (s.showMobs) {
-          const list = Game.mobs(gw);
-          for (let j = 0; j < list.length; j++) {
-            const e = list[j];
-            if (!e || e.isDying) continue;
-            drawEntity(e, hexA(s.mobColor || '#ffaa00', 0.25), s.mobColor, hit.target === e);
-          }
-        }
-        if (s.showSelf && myP) {
-          const box = getB(me);
-          drawBox(myP, box.half, false, 'rgba(255,255,255,0.12)', null, '#ffffff', mode, lw, s.showVertices, false);
+
+        const now = performance.now();
+        if (now - st._lastLogTime > 2000) {
+          st._lastLogTime = now;
+          st._log(
+            `sync=${st._syncCount} render=${st._renderCount}`,
+            `取得=${rawPlayerCount} エンティティ=${ents.length} 表示=${alive.size} メッシュ=${st._meshes.size}`,
+            `観戦者隠す=${hideSpec ? 'ON' : 'OFF'} 除外=${excludedSpec}`,
+            `照準=${target ? 'Y(' + bestT.toFixed(2) + 'm)' : 'N'} リーチ=${reachDistance}m 内=${inReach ? 'Y' : 'N'}`
+          );
         }
       };
-      st._start = () => { if (st._running) return; st._running = true; lastDraw = 0; st._raf = requestAnimationFrame(loop); };
-      st._stop = () => { if (st._raf) { cancelAnimationFrame(st._raf); st._raf = 0; } st._running = false; st._ctx && st._ctx.clearRect(0, 0, innerWidth, innerHeight); };
-      st._healthId = setInterval(() => {
-        if (!Mods.on('hitbox')) return;
-        if (!canvas.isConnected) { document.body.appendChild(canvas); st._resize && st._resize(); }
-        if (canvas.style.display !== 'block') canvas.style.display = 'block';
-      }, 1000);
-      st._start();
-    },
-    apply(enabled) { if (enabled) this._start && this._start(); else this._stop && this._stop(); },
-    destroy() { this._stop && this._stop(); if (this._healthId) clearInterval(this._healthId); window.removeEventListener('resize', this._resize); this._canvas && this._canvas.remove(); }
-  });
 
-  /* ===== MOD: Inventory Customizer ===== */
+      st._startPoll();
+      st._tryInit();
+      console.log('%c[Hitbox 3D] init', 'color:#93c5fd;font-weight:bold');
+    },
+
+    apply(enabled) {
+      const st = this;
+      if (!enabled) {
+        if (st._overlay) st._meshes.forEach(e => {
+          try { st._overlay.remove(e.mesh); } catch(_) {}
+          try { e.geo?.dispose?.(); } catch(_) {}
+        });
+        st._meshes.clear();
+        st._clearMatCache?.();
+        return;
+      }
+      if (!st._ready) st._tryInit();
+    },
+
+    destroy() {
+      const st = this;
+      if (st._pollRaf) { cancelAnimationFrame(st._pollRaf); st._pollRaf = 0; st._polling = false; }
+      if (st._renderer && st._hookedFn && st._renderer.render === st._hookedFn) {
+        try { st._renderer.render = st._origRender; } catch(_) {}
+      }
+      if (st._overlay) st._meshes.forEach(e => {
+        try { st._overlay.remove(e.mesh); } catch(_) {}
+        try { e.geo?.dispose?.(); } catch(_) {}
+      });
+      st._meshes.clear();
+      st._clearMatCache?.();
+      Object.assign(st, { _ready: false, _renderer: null, _origRender: null, _hookedFn: null, _classes: null, _overlay: null, _gameScene: null });
+    }
+  });
+})();  /* ===== MOD: Inventory Customizer ===== */
   Mods.reg({
     id: 'invcustomizer', name: 'Inventory Customizer', category: 'Visual', icon: 'svg:gridPanels', description: 'Restyle inventory / chest / hotbar panels', defaultEnabled: false,
     settings: [
