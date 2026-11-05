@@ -226,12 +226,36 @@
     const _listeners = new Set();
     const base = () => ({ core: { accent: '#3b82f6', keybinds: { 'gui.open': 'ShiftRight' }, profile: 'Default' }, hud: {}, mods: {}, favs: {}, profiles: { Default: null } });
     function save() {
+      let json;
+      try { json = JSON.stringify(d); } catch (e) {
+        console.error('[Config] stringify failed:', e);
+        return;
+      }
+
+      const cur = localStorage.getItem(K);
+
+      // ① バックアップは best-effort（容量超過時はスキップして .bak を消す）
+      if (cur) {
+        try {
+          localStorage.setItem(K + '.bak', cur);
+        } catch (_) {
+          // .bak が書けない → 邪魔なので消して primary 用の領域を空ける
+          try { localStorage.removeItem(K + '.bak'); } catch (__) {}
+        }
+      }
+
+      // ② primary は必須
       try {
-        const cur = localStorage.getItem(K);
-        if (cur) localStorage.setItem(K + '.bak', cur);
-        localStorage.setItem(K, JSON.stringify(d));
+        localStorage.setItem(K, json);
       } catch (e) {
-        console.warn('[Config] save failed (quota exceeded?):', e);
+        // まだ入らない → .bak を消してから再試行
+        try { localStorage.removeItem(K + '.bak'); } catch (_) {}
+        try {
+          localStorage.setItem(K, json);
+          console.warn('[Config] save recovered (removed .bak to fit quota)');
+        } catch (e2) {
+          console.error('[Config] save failed (quota, size=' + json.length + ' chars):', e2);
+        }
       }
     }
     function sch() {
