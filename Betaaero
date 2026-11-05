@@ -9338,6 +9338,10 @@ setInterval(() => {
         try { Mods.apply(m.id); } catch (_) {}
       }
     });
+
+    // ★ 追加: retry loop が Config.set をスパムしていても、
+    //   500ms ごとに強制保存することで変更が確実に永続化される安全網
+    try { Config.flush(); } catch (_) {}
   }, 500);
   const MAX_HOLD = 350;
   let modCode = null, modDownAt = 0, comboUsed = false;
