@@ -9372,26 +9372,39 @@ setInterval(() => {
   let modCode = null, modDownAt = 0, comboUsed = false;
   const MODS_SET = new Set(['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight']);
 
+  // 設定された open key を毎回読む（変更しても即反映される）
+  const getOpenKey = () => {
+    try { return Config.get('core.keybinds.gui.open', 'ShiftRight') || 'ShiftRight'; }
+    catch (_) { return 'ShiftRight'; }
+  };
+
   window.addEventListener('keydown', e => {
     if (!e.code || e.repeat) return;
-    if (MODS_SET.has(e.code)) {
-      if (!modCode) { modCode = e.code; modDownAt = Date.now(); comboUsed = false; }
-      else comboUsed = true;
+    const openKey = getOpenKey();
+    // MODS_SET のキー or 設定された open key なら「押下開始」として記録
+    if (MODS_SET.has(e.code) || e.code === openKey) {
+      if (!modCode) {
+        modCode = e.code;
+        modDownAt = Date.now();
+        comboUsed = false;
+      } else {
+        // 既に何かを押している最中に別のキー → コンボ
+        comboUsed = true;
+      }
       return;
     }
+    // 非モディファイアの他キー（WASD 等）が押された → コンボ
     if (modCode) comboUsed = true;
   }, true);
 
   window.addEventListener('keyup', e => {
     if (!e.code) return;
-    if (e.code !== 'ShiftRight') {
-      if (e.code === modCode) { modCode = null; modDownAt = 0; comboUsed = false; }
-      return;
-    }
+    if (e.code !== modCode) return;    // 追跡中のキー以外は無視
+    const openKey = getOpenKey();
     const held = Date.now() - modDownAt;
-    const fire = e.code === 'ShiftRight' && held < MAX_HOLD && !comboUsed;
+    const shouldFire = (e.code === openKey) && held < MAX_HOLD && !comboUsed;
     modCode = null; modDownAt = 0; comboUsed = false;
-    if (fire) { if (isText()) return; GUI.toggle(); }
+    if (shouldFire) { if (isText()) return; GUI.toggle(); }
   }, true);
 
   window.addEventListener('keydown', e => {
